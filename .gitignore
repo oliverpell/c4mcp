@@ -1,4 +1,6 @@
-# Build artifacts (c4z is tracked for releases)
+# Build artifacts
+build/
+*.c4z
 .director-restart-needed
 
 # IDE / editor

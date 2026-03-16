@@ -1,6 +1,6 @@
 # C4MCP — Control4 MCP Server
 
-**[Download c4mcp.c4z](c4mcp/build/c4mcp.c4z?raw=true)**
+**[Download c4mcp.c4z](https://github.com/oliverpell/c4mcp/releases/latest/download/c4mcp.c4z)**
 
 A Control4 DriverWorks driver that exposes your smart home via the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) over HTTP. Point any MCP-compatible AI client — Claude Code, Claude Desktop, OpenClaw, etc. — at your controller and control your home with natural language.
 
@@ -16,7 +16,7 @@ A Control4 DriverWorks driver that exposes your smart home via the [Model Contex
 
 ## Quick Start
 
-1. [Download c4mcp.c4z](c4mcp/build/c4mcp.c4z?raw=true) (or build from source — see [Building](#building))
+1. [Download c4mcp.c4z](https://github.com/oliverpell/c4mcp/releases/latest/download/c4mcp.c4z) (or build from source — see [Building](#building))
 2. Install `c4mcp.c4z` on your controller via Composer Pro (search under Controllers)
 3. Go to the driver's **Actions** tab and press **Generate API Key**. Copy the key from the **Last Generated Key** property (auto-clears after 30s)
 4. Configure your MCP client to connect to `http://<controller-ip>:9201/mcp` with the API key as a Bearer token
