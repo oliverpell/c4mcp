@@ -1,0 +1,10 @@
+# Build artifacts (c4z is tracked for releases)
+.director-restart-needed
+
+# IDE / editor
+.luarc.json
+.vscode/
+.idea/
+
+# Claude Code local settings
+.claude/settings.local.json

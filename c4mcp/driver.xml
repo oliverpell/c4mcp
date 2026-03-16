@@ -1,0 +1,184 @@
+<devicedata>
+  <copyright>Copyright 2026.</copyright>
+  <manufacturer>MCP</manufacturer>
+  <name>C4 MCP Server</name>
+  <model>c4mcp</model>
+  <creator>Oliver Pell</creator>
+  <created>02/21/2026 10:00</created>
+  <modified>02/22/2026 9:53 AM</modified>
+  <version>1</version>
+  <control>lua_gen</control>
+  <driver>DriverWorks</driver>
+  <small>locations_sm\lab.gif</small>
+  <large>locations_lg\lab.gif</large>
+  <auto_update>true</auto_update>
+  <minimum_auto_update_version>1</minimum_auto_update_version>
+  <minimum_os_version>2.10.5</minimum_os_version>
+  <composer_categories>
+    <category>Controllers</category>
+  </composer_categories>
+  <config>
+    <script file="driver.lua" />
+    <documentation file="www/documentation.html" />
+    <properties>
+      <property>
+        <name>Driver Version</name>
+        <type>STRING</type>
+        <default></default>
+        <readonly>true</readonly>
+      </property>
+      <property>
+        <name>Status</name>
+        <type>STRING</type>
+        <default></default>
+        <readonly>true</readonly>
+      </property>
+      <property>
+        <name>API Keys</name>
+        <type>STRING</type>
+        <default></default>
+        <readonly>true</readonly>
+      </property>
+      <property>
+        <name>Last Generated Key</name>
+        <type>STRING</type>
+        <default></default>
+      </property>
+      <property>
+        <name>Debug Mode</name>
+        <type>LIST</type>
+        <items>
+          <item>Off</item>
+          <item>On</item>
+        </items>
+        <default>Off</default>
+      </property>
+      <property>
+        <name>Transport</name>
+        <type>LIST</type>
+        <items>
+          <item>HTTP</item>
+          <item>HTTPS</item>
+        </items>
+        <default>HTTP</default>
+      </property>
+      <property>
+        <name>MCP Port</name>
+        <type>RANGED_INTEGER</type>
+        <minimum>1024</minimum>
+        <maximum>65535</maximum>
+        <default>9201</default>
+      </property>
+      <property>
+        <name>Max Connections</name>
+        <type>RANGED_INTEGER</type>
+        <minimum>1</minimum>
+        <maximum>10</maximum>
+        <default>5</default>
+      </property>
+      <property>
+        <name>Idle Timeout (sec)</name>
+        <type>RANGED_INTEGER</type>
+        <minimum>0</minimum>
+        <maximum>3600</maximum>
+        <default>300</default>
+      </property>
+      <property>
+        <name>Max Requests/sec</name>
+        <type>RANGED_INTEGER</type>
+        <minimum>1</minimum>
+        <maximum>100</maximum>
+        <default>30</default>
+      </property>
+      <property>
+        <name>Write Control Mode</name>
+        <type>LIST</type>
+        <items>
+          <item>Allow All</item>
+          <item>Allowlist</item>
+          <item>Blocklist</item>
+        </items>
+        <default>Allow All</default>
+      </property>
+      <property>
+        <name>Write Control Devices</name>
+        <type>DEVICE_SELECTOR</type>
+        <items>
+          <item>light_v2.c4i</item>
+          <item>light.c4i</item>
+          <item>thermostatV2.c4i</item>
+          <item>lock.c4i</item>
+          <item>blind.c4i</item>
+          <item>uibutton.c4i</item>
+          <item>relay.c4i</item>
+          <item>contactsingle.c4i</item>
+          <item>motionsensor.c4i</item>
+          <item>securitysystem.c4i</item>
+          <item>camera.c4i</item>
+          <item>doorstation.c4i</item>
+          <item>pool.c4i</item>
+        </items>
+        <multiselect>true</multiselect>
+      </property>
+      <property>
+        <name>Device Profiles</name>
+        <type>STRING</type>
+        <default></default>
+      </property>
+    </properties>
+    <commands>
+      <command>
+        <name>REFRESH_DEVICES</name>
+        <description>Refresh the internal device cache</description>
+      </command>
+    </commands>
+    <actions>
+      <action>
+        <name>Generate API Key</name>
+        <command>GenerateAPIKey</command>
+        <params>
+          <param>
+            <name>Name</name>
+            <type>STRING</type>
+          </param>
+        </params>
+      </action>
+      <action>
+        <name>Revoke API Key</name>
+        <command>RevokeAPIKey</command>
+        <params>
+          <param>
+            <name>Name</name>
+            <type>STRING</type>
+          </param>
+        </params>
+      </action>
+      <action>
+        <name>Revoke All API Keys</name>
+        <command>RevokeAllAPIKeys</command>
+      </action>
+      <action>
+        <name>Refresh Device Cache</name>
+        <command>RefreshDeviceCache</command>
+      </action>
+      <action>
+        <name>Test MCP Response</name>
+        <command>TestMCPResponse</command>
+      </action>
+      <action>
+        <name>Generate TLS Certificate (OS 3.4.1+)</name>
+        <command>GenerateTLSCertificate</command>
+      </action>
+      <action>
+        <name>Print TLS Certificate</name>
+        <command>PrintTLSCertificate</command>
+      </action>
+    </actions>
+  </config>
+  <connections></connections>
+  <events></events>
+  <combo>true</combo>
+  <proxies>
+    <proxy>c4mcp</proxy>
+  </proxies>
+</devicedata>

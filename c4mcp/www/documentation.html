@@ -1,0 +1,483 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>C4 MCP Server</title>
+<style>
+  body { font-family: Helvetica, Arial, sans-serif; font-size: 15px; line-height: 1.5; max-width: 800px; margin: 0 auto; padding: 20px; color: #333; }
+  h1 { font-size: 28px; margin-top: 30px; }
+  h2 { font-size: 24px; margin-top: 30px; border-bottom: 1px solid #ddd; padding-bottom: 6px; }
+  h3 { font-size: 20px; margin-top: 24px; }
+  code { font-family: 'Courier New', monospace; font-size: 13px; background: #f4f4f4; padding: 2px 5px; border-radius: 3px; }
+  pre { font-family: 'Courier New', monospace; font-size: 13px; background: #f4f4f4; padding: 12px; border-radius: 4px; overflow-x: auto; }
+  dt { font-weight: bold; margin-top: 8px; }
+  dd { margin-left: 20px; margin-bottom: 4px; }
+  table { border-collapse: collapse; margin: 12px 0; }
+  th, td { border: 1px solid #ddd; padding: 6px 12px; text-align: left; }
+  th { background: #f4f4f4; }
+</style>
+</head>
+<body>
+
+<h1>C4 MCP Server</h1>
+<p><em>Installation &amp; Configuration Guide</em></p>
+
+<p>The C4 MCP Server driver exposes your Control4 system to AI assistants (Claude Code, Claude Desktop, OpenClaw, or any MCP-compatible client) over the local network. An LLM can query device state, control lights, thermostats, blinds, locks, and more &ndash; all through natural language.</p>
+
+<p><strong>Requires</strong>: Control4 OS 2.10.5+. HTTPS requires OS 3.3.0+ (TLS cert generation requires OS 3.4.1+).</p>
+
+<h2>Quick Start</h2>
+
+<ol>
+  <li>Install <code>c4mcp.c4z</code> on the controller via Composer Pro (search under Controllers).</li>
+  <li>Go to the driver's <strong>Actions</strong> tab and press <strong>Generate API Key</strong>. Copy the key from the <strong>Last Generated Key</strong> property (it auto-clears after 30 seconds).</li>
+  <li>Configure your MCP client to connect to <code>http://&lt;controller-ip&gt;:9201/mcp</code> with the API key as a Bearer token.</li>
+</ol>
+
+<p><strong>Claude Code</strong> &ndash; run this command:</p>
+<pre>claude mcp add --transport http --header "Authorization: Bearer &lt;your-api-key&gt;" c4home http://&lt;controller-ip&gt;:9201/mcp</pre>
+
+<p>Or add to <code>~/.claude.json</code> (user scope) or <code>.mcp.json</code> (project scope):</p>
+<pre>{
+  "mcpServers": {
+    "c4home": {
+      "type": "http",
+      "url": "http://192.168.1.100:9201/mcp",
+      "headers": {
+        "Authorization": "Bearer &lt;your-api-key&gt;"
+      }
+    }
+  }
+}</pre>
+
+<p>You can now ask Claude questions like "What's the temperature?" or "Turn off the kitchen lights."</p>
+
+<h2>Properties</h2>
+
+<dl>
+  <dt>Driver Version <em>(read-only)</em></dt>
+  <dd>Current driver version.</dd>
+
+  <dt>Status <em>(read-only)</em></dt>
+  <dd>Server status: transport, port, and connected client count.</dd>
+
+  <dt>API Keys <em>(read-only)</em></dt>
+  <dd>List of configured key names with last 4 characters of each.</dd>
+
+  <dt>Last Generated Key</dt>
+  <dd>Displays the full API key after generation. Auto-clears after 30 seconds. Copy it immediately.</dd>
+
+  <dt>Debug Mode <em>(Off/On)</em></dt>
+  <dd>Enable verbose logging to the Lua console.</dd>
+
+  <dt>Transport <em>(HTTP/HTTPS)</em></dt>
+  <dd>Server transport. Falls back to HTTP if TLS certificate is missing.</dd>
+
+  <dt>MCP Port <em>(1024&ndash;65535, default 9201)</em></dt>
+  <dd>TCP port for the MCP server.</dd>
+
+  <dt>Max Connections <em>(1&ndash;10, default 5)</em></dt>
+  <dd>Maximum simultaneous client connections.</dd>
+
+  <dt>Idle Timeout <em>(0&ndash;3600 sec, default 300)</em></dt>
+  <dd>Disconnect idle clients after this many seconds. 0 disables the timeout.</dd>
+
+  <dt>Max Requests/sec <em>(1&ndash;100, default 30)</em></dt>
+  <dd>Per-client rate limit. Excess requests get HTTP 429.</dd>
+
+  <dt>Write Control Mode <em>(Allow All / Allowlist / Blocklist)</em></dt>
+  <dd>Controls which devices can receive commands. See <a href="#write-control">Write Control</a> section.</dd>
+
+  <dt>Write Control Devices</dt>
+  <dd>Device selection list for Allowlist/Blocklist mode.</dd>
+
+  <dt>Device Profiles</dt>
+  <dd>JSON configuration for custom devices and thermostats. See <a href="#device-profiles">Device Profiles</a> section.</dd>
+</dl>
+
+<h2>Actions</h2>
+
+<p>These are available from the Actions tab in Composer Pro.</p>
+
+<dl>
+  <dt>Generate API Key</dt>
+  <dd>Creates a new API key with the given name. The key appears in the Last Generated Key property and Lua console output.</dd>
+
+  <dt>Revoke API Key</dt>
+  <dd>Revokes a single key by name.</dd>
+
+  <dt>Revoke All API Keys</dt>
+  <dd>Revokes all keys. The server will deny all requests until a new key is generated. TLS certificates are preserved.</dd>
+
+  <dt>Refresh Device Cache</dt>
+  <dd>Re-reads the project to pick up newly added or removed devices.</dd>
+
+  <dt>Test MCP Response</dt>
+  <dd>Sends a ping to the MCP layer and shows "MCP OK" in Status if successful.</dd>
+
+  <dt>Generate TLS Certificate (OS 3.4.1+)</dt>
+  <dd>Generates a self-signed certificate via lua-openssl. Auto-restarts the server if Transport is HTTPS.</dd>
+
+  <dt>Print TLS Certificate</dt>
+  <dd>Prints the stored TLS certificate PEM to the Lua console.</dd>
+</dl>
+
+<h2>Authentication</h2>
+
+<p>The server uses Bearer token authentication. Every HTTP request must include an <code>Authorization: Bearer &lt;key&gt;</code> header.</p>
+
+<p><strong>Secure by default</strong>: If no API keys are configured, all requests are denied with HTTP 401. You must generate at least one key before the server will accept requests.</p>
+
+<p>API keys are hashed (SHA-256) before storage &ndash; the plaintext key is only shown once at generation time.</p>
+
+<h3>Generating keys</h3>
+<p>In Composer Pro: Actions tab &ndash; Generate API Key &ndash; enter a name &ndash; key appears in the Last Generated Key property and Lua console output.</p>
+
+<h3>Revoking keys</h3>
+<p>Single key: Actions tab &ndash; Revoke API Key &ndash; enter the key name.<br>
+All keys: Actions tab &ndash; Revoke All API Keys.</p>
+
+<h2>HTTPS Configuration</h2>
+
+<h3>Auto-generation (recommended)</h3>
+<ol>
+  <li>In Composer Pro, go to the driver's Actions tab.</li>
+  <li>Press <strong>Generate TLS Certificate (OS 3.4.1+)</strong>. This generates a self-signed certificate on the controller using lua-openssl (valid for 10 years).</li>
+  <li>Set the <strong>Transport</strong> property to <strong>HTTPS</strong>.</li>
+  <li>The Status property should show "HTTPS on port 9201".</li>
+</ol>
+
+<h3>Manual certificate upload</h3>
+<p>For CA-signed or custom certificates, use the Lua console in Composer Pro:</p>
+<pre>SetTLSCertificate(cert_pem, key_pem)</pre>
+<p>Both arguments accept full PEM format or raw base64 (headers are added automatically). There is no size limit when calling functions from the Lua console.</p>
+
+<h3>Print certificate</h3>
+<p>Use the <strong>Print TLS Certificate</strong> action to view the current certificate PEM in the Lua console output. This is useful for verifying the certificate identity on the client side.</p>
+
+<h3>Fallback behavior</h3>
+<p>If HTTPS is selected but no certificate is available or TLS server creation fails, the driver automatically falls back to HTTP and logs the reason. The Status property shows the error.</p>
+
+<h3>Trusting the Self-Signed Certificate</h3>
+
+<p>The <strong>Generate TLS Certificate</strong> action creates a self-signed certificate with the controller's IP address embedded as a Subject Alternative Name (SAN). This allows TLS clients to verify the server by IP address, which is required by modern TLS implementations including Node.js.</p>
+
+<p><strong>Step 1: Download the certificate</strong></p>
+<p>From a terminal on your workstation, use <code>openssl s_client</code> to download the certificate from the running server:</p>
+<pre>openssl s_client -connect 192.168.1.100:9201 -showcerts &lt;/dev/null 2&gt;/dev/null \
+  | openssl x509 -outform PEM &gt; c4mcp.pem</pre>
+<p>Replace <code>192.168.1.100:9201</code> with your controller's IP and configured MCP port.</p>
+
+<p><strong>Step 2: Verify the certificate contains the controller IP</strong></p>
+<pre>openssl x509 -in c4mcp.pem -noout -text | grep -A1 "Subject Alternative Name"</pre>
+<p>You should see output like:</p>
+<pre>X509v3 Subject Alternative Name:
+    IP Address:192.168.1.100</pre>
+<p>If the SAN is missing (e.g. from an older certificate), regenerate it with the <strong>Generate TLS Certificate</strong> action.</p>
+
+<p><strong>Step 3: Trust the certificate</strong></p>
+
+<p><em>Option A: Claude Code / Node.js (recommended)</em></p>
+<p>Set the <code>NODE_EXTRA_CA_CERTS</code> environment variable to point to the downloaded PEM file. Add this to your shell profile (<code>~/.bashrc</code>, <code>~/.zshrc</code>, etc.):</p>
+<pre>export NODE_EXTRA_CA_CERTS=/path/to/c4mcp.pem</pre>
+<p>Then update your Claude Code MCP config to use <code>https://</code>:</p>
+<pre>{
+  "mcpServers": {
+    "c4home": {
+      "type": "http",
+      "url": "https://192.168.1.100:9201/mcp",
+      "headers": {
+        "Authorization": "Bearer &lt;your-api-key&gt;"
+      }
+    }
+  }
+}</pre>
+
+<p><em>Option B: System-wide trust (Linux)</em></p>
+<pre>sudo cp c4mcp.pem /usr/local/share/ca-certificates/c4mcp.crt
+sudo update-ca-certificates</pre>
+
+<p><em>Option C: System-wide trust (macOS)</em></p>
+<pre>sudo security add-trusted-cert -d -r trustRoot \
+  -k /Library/Keychains/System.keychain c4mcp.pem</pre>
+
+<p><em>Option D: System-wide trust (Windows)</em></p>
+<p>Import <code>c4mcp.pem</code> via <code>certmgr.msc</code>: Trusted Root Certification Authorities &ndash; Certificates &ndash; right-click &ndash; All Tasks &ndash; Import.</p>
+
+<p><strong>Note</strong>: If the controller's IP address changes, you must regenerate the certificate (the SAN will no longer match) and re-download it.</p>
+
+<h2 id="write-control">Write Control</h2>
+
+<p>Controls which devices the MCP server can send commands to. Read operations (listing devices, reading state) are always allowed regardless of this setting.</p>
+
+<dl>
+  <dt>Allow All <em>(default)</em></dt>
+  <dd>All devices can be controlled.</dd>
+  <dt>Allowlist</dt>
+  <dd>Only devices selected in Write Control Devices can be controlled.</dd>
+  <dt>Blocklist</dt>
+  <dd>All devices <em>except</em> those selected in Write Control Devices can be controlled.</dd>
+</dl>
+
+<p>Use Allowlist mode to restrict the AI to specific devices (e.g. only lights). Use Blocklist to exclude sensitive devices (e.g. locks, security system).</p>
+
+<h2>MCP Tools</h2>
+
+<p>These are the tools the AI client discovers automatically via the MCP protocol. You do not need to configure these &ndash; they are built into the driver.</p>
+
+<h3>Read Tools</h3>
+
+<dl>
+  <dt><code>get_home</code></dt>
+  <dd>Home overview: room list, device count by type, number of lights currently on. The AI calls this first to orient itself.</dd>
+
+  <dt><code>get_devices</code></dt>
+  <dd>List devices with live state. Supports filtering by <code>device_id</code> (single device), <code>room_id</code>, or <code>device_type</code>. Use <code>state_fields</code> to limit which state fields are returned. Always includes <code>controls.actions</code> showing available commands for each device.</dd>
+
+  <dt><code>get_device_profiles</code></dt>
+  <dd>Show current Device Profiles configuration and count of built-in profiles.</dd>
+
+  <dt><code>configure_device_profiles</code></dt>
+  <dd>Returns a step-by-step prompt guiding the AI through Device Profile configuration.</dd>
+</dl>
+
+<h3>Control Tools</h3>
+
+<dl>
+  <dt><code>control_device</code></dt>
+  <dd>Unified control for any device type. Parameters: <code>device_id</code>, <code>action</code>, and optional <code>params</code>. Actions and their parameter schemas are discovered by calling <code>get_devices</code> and reading the <code>controls.actions</code> field.</dd>
+
+  <dt><code>control_devices</code></dt>
+  <dd>Batch control. Accepts an array of <code>{device_id, action, params}</code> operations (max 20 per call). Returns per-device results with a summary.</dd>
+
+  <dt><code>set_device_profiles</code></dt>
+  <dd>Write new Device Profiles JSON configuration.</dd>
+</dl>
+
+<h3>How control works</h3>
+<ol>
+  <li>The AI calls <code>get_devices</code> to discover devices and their available actions.</li>
+  <li>Each device's state includes <code>controls.actions</code> &ndash; a map of action names to parameter schemas.</li>
+  <li>The AI calls <code>control_device</code> with the device ID, action name, and required parameters.</li>
+  <li>The driver validates the request (device exists, write access allowed, action valid, params in range) and dispatches the C4 command.</li>
+  <li>The response confirms the command was dispatched. Commands are fire-and-forget &ndash; the AI can call <code>get_devices</code> again to verify the state changed.</li>
+</ol>
+
+<h2>Supported Device Types</h2>
+
+<table>
+<tr><th>Type</th><th>Actions</th><th>State</th></tr>
+<tr><td><strong>light</strong></td><td><code>on</code>, <code>off</code>, <code>toggle</code>, <code>set_level</code> (0&ndash;100), <code>set_color</code> (if capable)</td><td><code>power</code>, <code>level</code> (dimmable only)</td></tr>
+<tr><td><strong>thermostat</strong></td><td><code>set_mode</code>, <code>set_setpoint</code> (with scale C/F), <code>set_fan</code>, <code>set_hold</code>, plus custom profile actions</td><td><code>temperature_c</code>, <code>temperature_f</code>, <code>hvac_mode</code>, <code>hvac_state</code>, <code>hold_mode</code>, setpoints, optionally <code>humidity</code> and <code>outdoor_temperature</code></td></tr>
+<tr><td><strong>blind</strong></td><td><code>open</code>, <code>close</code>, <code>stop</code> (if capable), <code>set_level</code> (0&ndash;100)</td><td><code>level</code>, <code>moving</code></td></tr>
+<tr><td><strong>lock</strong></td><td><code>lock</code>, <code>unlock</code></td><td><code>locked</code>, <code>battery</code></td></tr>
+<tr><td><strong>relay</strong></td><td><code>open</code>, <code>close</code>, <code>toggle</code>, <code>trigger</code> (with <code>duration_ms</code>)</td><td><code>state</code></td></tr>
+<tr><td><strong>security</strong></td><td><code>arm_stay</code>, <code>arm_away</code>, <code>arm_night</code>, <code>disarm</code> (all accept optional <code>code</code>)</td><td><code>armed_mode</code>, <code>alarm_state</code></td></tr>
+<tr><td><strong>sensor</strong> <em>(read-only)</em></td><td>&mdash;</td><td><code>sensor_type</code>, <code>triggered</code>, <code>battery</code>, <code>last_triggered</code> (motion only)</td></tr>
+<tr><td><strong>custom_device</strong></td><td><code>select</code> plus profile-defined actions</td><td><code>value</code>, <code>label</code>, <code>category</code>, plus profile-specific extra vars</td></tr>
+<tr><td><strong>camera</strong> / <strong>door_station</strong></td><td><em>read-only, minimal state</em></td><td>&mdash;</td></tr>
+</table>
+
+<h2>MCP Resources</h2>
+
+<p>Resources provide data access via URI patterns.</p>
+
+<dl>
+  <dt><code>c4://project</code></dt>
+  <dd>Project info: room count, device count, temperature scale.</dd>
+  <dt><code>c4://rooms/{room_id}</code></dt>
+  <dd>Room details with all device states.</dd>
+  <dt><code>c4://devices/{device_id}</code></dt>
+  <dd>Single device details with full state.</dd>
+</dl>
+
+<h2 id="device-profiles">Device Profiles</h2>
+
+<p>Device Profiles configure how <strong>custom devices</strong> (experience button proxies) and <strong>thermostats</strong> are exposed to the AI. Without a profile, custom devices default to a single "select" action with no context about what the device actually does.</p>
+
+<h3>Built-in Profiles</h3>
+
+<p>The driver includes profiles for common Control4 drivers, matched by driver filename:</p>
+
+<table>
+<tr><th>Driver pattern</th><th>Category</th><th>Actions</th></tr>
+<tr><td><code>lift_relay_control.c4z</code></td><td>lift</td><td>open, close, stop</td></tr>
+<tr><td><code>screen_relay_control.c4z</code></td><td>screen</td><td>open, close, stop</td></tr>
+<tr><td><code>*_relay_control.c4z</code></td><td>relay_control</td><td>open, close, stop</td></tr>
+<tr><td><code>timer_*.c4z</code></td><td>timer</td><td>on, off, set_countdown_mins</td></tr>
+<tr><td><code>experience-button-scenario.c4z</code></td><td>scenario</td><td>select, set_state</td></tr>
+<tr><td><code>uibutton_*.c4z</code></td><td>av_source</td><td>select</td></tr>
+</table>
+
+<p>User-configured profiles (by device ID) take priority over built-in profiles and fully replace them (no merging).</p>
+
+<h3>JSON Configuration Format</h3>
+
+<p>Set via the <strong>Device Profiles</strong> property or the <code>set_device_profiles</code> MCP tool. The value is a JSON object keyed by device ID (as strings):</p>
+
+<pre>{
+  "243": {
+    "category": "extract_fan",
+    "states": {"0": "off", "1": "on"},
+    "actions": {
+      "on": "ON",
+      "off": "OFF",
+      "toggle": "TOGGLE",
+      "set_countdown": "SetCountdown(Time[10,15,20,25,30,45,60]) @parent"
+    },
+    "extra_vars": ["COUNTDOWN", "RUNTIME"]
+  }
+}</pre>
+
+<h3>Fields</h3>
+<dl>
+  <dt>category</dt>
+  <dd>Category label exposed to the AI (e.g. "extract_fan", "pool_heater").</dd>
+  <dt>states</dt>
+  <dd>Map of state values to labels: <code>{"0": "off", "1": "on"}</code> or <code>{"Opened": "open", "Closed": "closed"}</code>.</dd>
+  <dt>actions</dt>
+  <dd>Map of action names to compact command strings (see syntax below).</dd>
+  <dt>extra_vars</dt>
+  <dd>Array of extra variable names to include in device state (e.g. <code>["COUNTDOWN", "RUNTIME"]</code>).</dd>
+  <dt>setpoint_type</dt>
+  <dd>Thermostats only: <code>"single"</code> (default), <code>"heat"</code>, <code>"cool"</code>, or <code>"heat_cool"</code>.</dd>
+</dl>
+
+<h3>Compact Action Syntax</h3>
+<table>
+<tr><th>Syntax</th><th>Meaning</th></tr>
+<tr><td><code>"COMMAND"</code></td><td>No parameters</td></tr>
+<tr><td><code>"COMMAND(Param[A,B,C])"</code></td><td>Enum parameter with allowed values</td></tr>
+<tr><td><code>"COMMAND(Param[0-100])"</code></td><td>Numeric range parameter</td></tr>
+<tr><td><code>"COMMAND(Param)"</code></td><td>Parameter accepting any value</td></tr>
+<tr><td><code>"COMMAND(P1[a,b], P2[0-5])"</code></td><td>Multiple parameters</td></tr>
+<tr><td><code>"... @parent"</code></td><td>Send command to parent device instead of proxy</td></tr>
+</table>
+
+<p><strong>Important: @parent</strong> &ndash; Custom devices are experience button proxies. Their commands (EX_CMDs) typically live on the parent driver, not the proxy. If a command goes to the wrong target, it is silently ignored. Use <code>@parent</code> for any command handled by the parent driver.</p>
+
+<h3>Thermostat Profiles</h3>
+
+<p>Thermostat profiles configure the setpoint type and can add custom actions beyond the standard set_mode/set_setpoint/set_fan/set_hold:</p>
+
+<pre>{
+  "208": {
+    "setpoint_type": "heat_cool",
+    "actions": {
+      "set_day_temp": "SET_DAY_TEMPERATURE(Degrees[5-30]) @parent",
+      "set_setback_temp": "SET_SETBACK_TEMPERATURE(Degrees[5-30]) @parent"
+    }
+  }
+}</pre>
+
+<p>Setpoint types:</p>
+<dl>
+  <dt><code>"single"</code> <em>(default)</em></dt>
+  <dd>Single setpoint, sends SET_SETPOINT_SINGLE.</dd>
+  <dt><code>"heat"</code></dt>
+  <dd>Heat setpoint only, sends SET_SETPOINT_HEAT.</dd>
+  <dt><code>"cool"</code></dt>
+  <dd>Cool setpoint only, sends SET_SETPOINT_COOL.</dd>
+  <dt><code>"heat_cool"</code></dt>
+  <dd>Dual setpoints with heat/cool target selection.</dd>
+</dl>
+
+<h3>Configuration via AI</h3>
+<p>The <code>configure_device_profiles</code> MCP tool provides a guided workflow. The AI will discover your devices, ask what commands each custom device supports, build the JSON, and apply it.</p>
+
+<h3>Lookup Order</h3>
+<ol>
+  <li>Device ID in user JSON config (highest priority).</li>
+  <li>Driver filename in built-in profiles (exact match, then wildcard).</li>
+  <li>Generic fallback (<code>select</code> only).</li>
+</ol>
+
+<h3>Finding Device IDs</h3>
+<p>Use the <code>get_devices</code> MCP tool, or in Composer Pro: System Design view, select a device, check the ID in properties.</p>
+
+<h2>Server Internals</h2>
+
+<h3>Connection Management</h3>
+<ul>
+  <li>Maximum concurrent connections enforced (default 5). Excess connections receive HTTP 429.</li>
+  <li>Idle connections are closed after the configured timeout (default 300 seconds).</li>
+  <li>Per-client rate limiting via sliding window (default 30 req/s). Excess requests receive HTTP 429.</li>
+  <li>A 60-second watchdog timer checks server health and restarts the listener if it goes down.</li>
+  <li>TCP server uses exponential backoff retry (3s&ndash;60s, up to 10 attempts) if the port is unavailable.</li>
+</ul>
+
+<h3>MCP Protocol</h3>
+<ul>
+  <li>Implements MCP protocol version 2025-03-26 (Streamable HTTP transport).</li>
+  <li>Stateless &ndash; no session IDs, each request is self-contained.</li>
+  <li><code>POST /mcp</code> is the only valid endpoint. Other paths return 404, other methods return 405.</li>
+  <li>JSON-RPC notifications (no <code>id</code> field) receive HTTP 202 with no response body.</li>
+  <li>Body limit: 64KB. Header limit: 8KB.</li>
+</ul>
+
+<h2>Troubleshooting</h2>
+
+<h3>Server won't start / Status shows error</h3>
+<ul>
+  <li>Check that port 9201 (or configured port) is not in use by another process.</li>
+  <li>Check the Lua console for error messages (enable Debug Mode for verbose output).</li>
+  <li>Use the <strong>Test MCP Response</strong> action to verify the MCP layer is working.</li>
+</ul>
+
+<h3>401 Unauthorized</h3>
+<ul>
+  <li>Verify the API key is correct &ndash; keys are shown only once at generation.</li>
+  <li>Ensure the <code>Authorization: Bearer &lt;key&gt;</code> header is present in requests.</li>
+  <li>If no keys are configured, generate one first. The server denies all requests when no keys exist.</li>
+</ul>
+
+<h3>HTTPS not working</h3>
+<ul>
+  <li>Check Status property for error details.</li>
+  <li>Verify a TLS certificate exists (use <strong>Print TLS Certificate</strong> action).</li>
+  <li>OS 3.3.0+ is required for TLS server support. OS 3.4.1+ is required for certificate auto-generation.</li>
+  <li>Use <strong>Generate TLS Certificate</strong> to create a new one, or <code>SetTLSCertificate()</code> from the Lua console for custom certs.</li>
+</ul>
+
+<h3>Devices not showing up</h3>
+<ul>
+  <li>Use <strong>Refresh Device Cache</strong> action after adding or removing devices in Composer Pro.</li>
+  <li>The device cache is rebuilt automatically at driver startup.</li>
+  <li>Only supported proxy types are exposed: light, thermostat, lock, blind, relay, sensor, security, camera, door station, and experience button (uibutton).</li>
+</ul>
+
+<h3>Custom device shows only "select" action</h3>
+<ul>
+  <li>The device needs a Device Profile. See the <a href="#device-profiles">Device Profiles</a> section above.</li>
+  <li>Check if a built-in profile already covers it (matched by driver filename).</li>
+  <li>Use the <code>configure_device_profiles</code> MCP tool to create a profile interactively with the AI.</li>
+</ul>
+
+<h3>Commands dispatched but device doesn't respond</h3>
+<ul>
+  <li><code>control_device</code> confirms dispatch, not execution &ndash; commands are fire-and-forget.</li>
+  <li>Check Write Control Mode &ndash; the device may be blocked.</li>
+  <li>For custom devices, ensure the action uses <code>@parent</code> if the command is handled by the parent driver.</li>
+  <li>Verify the command name and parameters match what the device actually supports.</li>
+</ul>
+
+<h3>Connection drops / "Too many connections"</h3>
+<ul>
+  <li>Default max is 5 simultaneous connections &ndash; increase via Max Connections if needed.</li>
+  <li>Idle connections are closed after 300 seconds &ndash; increase Idle Timeout if the client reconnects frequently.</li>
+</ul>
+
+<h3>Rate limiting (429 errors)</h3>
+<ul>
+  <li>Default is 30 requests/second per client.</li>
+  <li>Increase via Max Requests/sec if the AI is making rapid successive calls.</li>
+</ul>
+
+<h2>Lua Console Reference</h2>
+
+<p><code>SetTLSCertificate(cert_pem, key_pem)</code></p>
+<p>Import a custom TLS certificate. Both arguments accept PEM format or raw base64 (headers are added automatically). Call with no arguments for usage help.</p>
+
+</body>
+</html>
