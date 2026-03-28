@@ -10,6 +10,15 @@ local M = {}
 local _rooms = {}     -- {[roomId] = {id, name, floor}}
 local _devices = {}   -- {[deviceId] = {id, name, type, room_id, room_name, driver_name}}
 local _scale = "C"    -- Temperature scale from project
+-- Media source caches (built in refresh_cache)
+local _room_sources = {}  -- {[roomId] = {sources=[], listen_ids={}, watch_ids={}}}
+local _media_rooms = {}   -- {[roomId] = true} for rooms with non-empty source lists
+-- Universal Digital Audio system device ID. Same (100002) on all known
+-- controllers and OS versions. Accessed via M.get_da_device_id().
+local DA_DEVICE_ID = 100002
+-- Forward declaration: refresh_source_cache is called at the end of refresh_cache
+-- but defined after it. Lua 5.1 requires a local to be declared before closure capture.
+local refresh_source_cache
 
 -- Proxy type to MCP device type mapping
 local PROXY_TYPE_MAP = {
@@ -25,6 +34,19 @@ local PROXY_TYPE_MAP = {
     ["securitysystem.c4i"] = "security",
     ["camera.c4i"]         = "camera",
     ["doorstation.c4i"]    = "door_station",
+    -- Media devices (excluded from get_devices, used for name resolution in get_media)
+    ["receiver.c4i"]       = "media",
+    ["amplifier.c4i"]      = "media",
+    ["avswitch.c4i"]       = "media",
+    ["audioswitch.c4i"]    = "media",
+    ["mediaplayer.c4i"]    = "media",
+    ["media_player.c4i"]   = "media",
+    ["media_service.c4i"]  = "media",
+    ["tv.c4i"]             = "media",
+    ["tuner.c4i"]          = "media",
+    ["satellite.c4i"]      = "media",
+    ["dvd.c4i"]            = "media",
+    ["cd.c4i"]             = "media",
 }
 
 --- Find first child node with matching tag name
@@ -138,15 +160,17 @@ function M.refresh_cache()
     end
 
     -- Helper: extract a proxy (type 7) item into _devices
+    -- All proxies are stored for name resolution (media sources, etc.)
+    -- Proxies with unrecognized c4i types get type=nil and are excluded from list_devices
     local function add_proxy(item, parent_id, parent_driver)
         local idNode = find_child(item, "id")
         local nameNode = find_child(item, "name")
         local c4iNode = find_child(item, "c4i")
-        if not (idNode and c4iNode) then return end
+        if not idNode then return end
         local id = tonumber(get_text(idNode))
-        local c4i = get_text(c4iNode)
-        local device_type = PROXY_TYPE_MAP[c4i]
-        if not (id and device_type) then return end
+        if not id then return end
+        local c4i = c4iNode and get_text(c4iNode)
+        local device_type = c4i and PROXY_TYPE_MAP[c4i] or nil
 
         local room_id = nil
         local room_name = ""
@@ -283,6 +307,209 @@ function M.refresh_cache()
             end
         end
     end
+
+    -- Build media source cache for all rooms (must be after _rooms and _devices are populated)
+    refresh_source_cache()
+end
+
+--------------------------------------------------------------------------------
+-- Media Source Discovery
+--------------------------------------------------------------------------------
+
+-- Source types to exclude from user-facing lists
+local INTERNAL_SOURCE_TYPES = {
+    DIGITAL_AUDIO_CLIENT = true,
+    SPECIAL_AUDIO = true,
+    UIButton = true,
+}
+
+-- Built-in C4 browse-only MSP sources (UI navigation only, no MCP value)
+local BROWSE_ONLY_DRIVERS = {
+    ["AddMusic.c4z"]  = true,
+    ["MyMusic.c4z"]   = true,
+    ["Stations.c4z"]  = true,
+    ["Channels.c4z"]  = true,
+    ["MyMovies.c4z"]  = true,
+}
+
+--- Parse source XML into {[id] = type} table, excluding internal types
+local function parse_source_xml(xml)
+    local sources = {}
+    for id, typ in (xml or ""):gmatch("<source>%s*<id>(%d+)</id>%s*<type>(.-)</type>%s*</source>") do
+        local nid = tonumber(id)
+        if nid and not INTERNAL_SOURCE_TYPES[typ] then
+            sources[nid] = typ
+        end
+    end
+    return sources
+end
+
+--- Build combined source list for a room
+-- GET_LISTEN_DEVICES and GET_WATCH_DEVICES are synchronous room queries that
+-- return XML directly (verified on real controller). This is an intentional
+-- exception to the normal fire-and-forget pattern for C4:SendToDevice.
+local function build_room_sources(room_id)
+    local listen_xml = C4:SendToDevice(room_id, "GET_LISTEN_DEVICES", {})
+    local watch_xml = C4:SendToDevice(room_id, "GET_WATCH_DEVICES", {})
+
+    local listen = parse_source_xml(listen_xml)
+    local watch = parse_source_xml(watch_xml)
+
+    local sources = {}
+    local seen = {}
+
+    -- Video sources first (watch list takes priority for overlap)
+    for id, _ in pairs(watch) do
+        seen[id] = true
+        local dev = _devices[id]
+        if not (dev and BROWSE_ONLY_DRIVERS[dev.driver_name]) then
+            sources[#sources + 1] = {
+                id = id,
+                name = dev and dev.name or ("Device " .. id),
+                category = "video",
+            }
+        end
+    end
+    -- Audio sources (skip any already added from watch)
+    for id, _ in pairs(listen) do
+        if not seen[id] then
+            local dev = _devices[id]
+            if not (dev and BROWSE_ONLY_DRIVERS[dev.driver_name]) then
+                sources[#sources + 1] = {
+                    id = id,
+                    name = dev and dev.name or ("Device " .. id),
+                    category = "audio",
+                }
+            end
+        end
+    end
+
+    table.sort(sources, function(a, b) return a.id < b.id end)
+    return sources, listen, watch
+end
+
+--- Refresh the media source cache for all rooms
+refresh_source_cache = function()
+    _room_sources = {}
+    _media_rooms = {}
+    for roomId, _ in pairs(_rooms) do
+        local sources, listen_ids, watch_ids = build_room_sources(roomId)
+        _room_sources[roomId] = {
+            sources = sources,
+            listen_ids = listen_ids,
+            watch_ids = watch_ids,
+        }
+        if #sources > 0 then
+            _media_rooms[roomId] = true
+        end
+    end
+end
+
+--- Get cached source list for a room
+function M.get_room_sources(room_id)
+    local cache = _room_sources[room_id]
+    return cache and cache.sources or {}
+end
+
+--- Check if a room has media capability
+function M.is_media_room(room_id)
+    return _media_rooms[room_id] == true
+end
+
+--- List all media-capable room IDs
+function M.list_media_rooms()
+    local result = {}
+    for roomId, _ in pairs(_media_rooms) do
+        result[#result + 1] = roomId
+    end
+    table.sort(result)
+    return result
+end
+
+--- Check if a device is a video (watch) source in a room
+function M.is_watch_source(room_id, device_id)
+    local cache = _room_sources[room_id]
+    return cache and cache.watch_ids[device_id] ~= nil
+end
+
+--- Check if a device is in a room's source list (audio or video)
+function M.is_room_source(room_id, device_id)
+    local cache = _room_sources[room_id]
+    if not cache then return false end
+    return cache.listen_ids[device_id] ~= nil or cache.watch_ids[device_id] ~= nil
+end
+
+--- Get the DA device ID constant
+function M.get_da_device_id()
+    return DA_DEVICE_ID
+end
+
+--------------------------------------------------------------------------------
+-- Room Media Status Helpers
+--------------------------------------------------------------------------------
+
+--- Decode XML entities in a string
+local function xml_decode(s)
+    if not s then return s end
+    -- Decode &amp; last to avoid double-decoding (e.g. &amp;lt; → &lt; → <)
+    s = s:gsub("&lt;", "<")
+    s = s:gsub("&gt;", ">")
+    s = s:gsub("&apos;", "'")
+    s = s:gsub("&quot;", '"')
+    s = s:gsub("&amp;", "&")
+    return s
+end
+
+--- Parse now-playing from var 1031 (CURRENT MEDIA INFO) XML.
+-- Returns nil if both title and artist are absent.
+-- Returns a partial object if only one is present (some stations omit one).
+-- @param xml string|nil Variable 1031 value
+-- @return table|nil {title, artist, album, media_type, state} or nil
+function M.parse_now_playing(xml)
+    if not xml or xml == "" then return nil end
+
+    local title = xml:match("<title>(.-)</title>")
+    local artist = xml:match("<artist>(.-)</artist>")
+    local album = xml:match("<album>(.-)</album>")
+    local media_type = xml:match("<mediatype>(.-)</mediatype>")
+    local stream_status = xml:match("<streamStatus>(.-)</streamStatus>")
+
+    -- Parse stream status for playback state
+    local state = nil
+    if stream_status then
+        if stream_status:find("status=OK_playing") then state = "playing"
+        elseif stream_status:find("status=OK_paused") then state = "paused"
+        end
+    end
+
+    if not title and not artist then return nil end
+
+    return {
+        title = xml_decode(title),
+        artist = xml_decode(artist),
+        album = (album and album ~= "" and album ~= "content") and xml_decode(album) or nil,
+        media_type = media_type,
+        state = state,
+    }
+end
+
+--- Resolve the selected device name for a room given room variables
+-- For streaming (var 1000 == DA device), uses var 1036 (PLAYING_AUDIO_DEVICE)
+-- @param selected number CURRENT_SELECTED_DEVICE value
+-- @param playing_audio number PLAYING_AUDIO_DEVICE value
+-- @return number|nil device_id, string name
+function M.resolve_selected_device(selected, playing_audio)
+    if not selected or selected == 0 then return nil, nil end
+    if selected == DA_DEVICE_ID then
+        -- Streaming: resolve from PLAYING_AUDIO_DEVICE
+        if playing_audio and playing_audio > 0 then
+            local dev = _devices[playing_audio]
+            return playing_audio, dev and dev.name or ("Device " .. playing_audio)
+        end
+        return DA_DEVICE_ID, "Digital Audio"
+    end
+    local dev = _devices[selected]
+    return selected, dev and dev.name or ("Device " .. selected)
 end
 
 --- Get the temperature scale
@@ -308,17 +535,21 @@ function M.list_devices(opts)
     opts = opts or {}
     local result = {}
     for _, dev in pairs(_devices) do
-        local match = true
-        if opts.room_id and dev.room_id ~= opts.room_id then match = false end
-        if opts.device_type and dev.type ~= opts.device_type then match = false end
-        if match then
-            result[#result + 1] = {
-                id = dev.id,
-                name = dev.name,
-                type = dev.type,
-                room_id = dev.room_id,
-                room_name = dev.room_name,
-            }
+        -- Only include devices with recognized non-media types
+        -- (media devices controlled via get_media/control_media, unknown types excluded)
+        if dev.type and dev.type ~= "media" then
+            local match = true
+            if opts.room_id and dev.room_id ~= opts.room_id then match = false end
+            if opts.device_type and dev.type ~= opts.device_type then match = false end
+            if match then
+                result[#result + 1] = {
+                    id = dev.id,
+                    name = dev.name,
+                    type = dev.type,
+                    room_id = dev.room_id,
+                    room_name = dev.room_name,
+                }
+            end
         end
     end
     table.sort(result, function(a, b) return a.id < b.id end)
@@ -436,6 +667,7 @@ function M.register_read_tools(mcp_server)
             -- Get temperature from Composer-configured temperature source
             local room_vars = C4:GetDeviceVariables(room.id)
             if room_vars then
+                -- Scan room vars by name for temperature source
                 local temp_id
                 for _, v in pairs(room_vars) do
                     if v.name == "TEMPERATURE_ID" then
@@ -452,6 +684,30 @@ function M.register_read_tools(mcp_server)
                             end
                         end
                     end
+                end
+
+                -- Add media summary for media-capable rooms (zero extra API calls)
+                if M.is_media_room(room.id) then
+                    local rv = {}  -- quick lookup by numeric var ID
+                    for varId, v in pairs(room_vars) do
+                        local nid = tonumber(varId)
+                        if nid then rv[nid] = v.value end
+                    end
+                    local power = rv[1010] == "1"
+                    local selected = tonumber(rv[1000]) or 0
+                    local playing_audio = tonumber(rv[1036]) or 0
+                    local device_group = rv[1032] or ""
+                    local dev_id, dev_name = M.resolve_selected_device(selected, playing_audio)
+                    local media_type = nil
+                    if device_group == "watch" or device_group == "video" then media_type = "video"
+                    elseif device_group == "listen" or device_group == "audio" then media_type = "audio"
+                    end
+                    room.media = {
+                        power = power,
+                        selected_device = dev_name,
+                        selected_device_id = dev_id,
+                        media_type = media_type,
+                    }
                 end
             end
         end

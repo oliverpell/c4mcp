@@ -1,7 +1,6 @@
 # Build artifacts
 build/
 *.c4z
-.director-restart-needed
 
 # IDE / editor
 .luarc.json

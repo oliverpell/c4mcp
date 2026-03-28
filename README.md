@@ -11,6 +11,7 @@ A Control4 DriverWorks driver that exposes your smart home via the [Model Contex
 - Runs an MCP server directly on the Control4 controller — no external server needed
 - Exposes device state, room layout, and control via standard MCP tools
 - Supports lights, thermostats, blinds, locks, relays, sensors, experience buttons, and more
+- Room-centric media control — play/pause, volume, source selection, broadcast audio stations, multi-room sessions
 - Bearer token authentication for LAN security
 - HTTP and HTTPS transport
 
@@ -47,6 +48,7 @@ c4mcp/
 │   ├── server.lua        # Server lifecycle (HTTP/HTTPS)
 │   ├── auth.lua          # API key authentication
 │   ├── c4_home.lua       # Smart home data layer
+│   ├── c4_media.lua      # Media status and control
 │   ├── control.lua       # Device control dispatch
 │   ├── device_config.lua # Custom device profiles
 │   └── device_types.lua  # Per-type control handlers

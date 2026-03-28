@@ -4,6 +4,7 @@
 
 local c4_home = require("modules.c4_home")
 local control_mod = require("modules.control")
+local c4_media = require("modules.c4_media")
 local device_config = require("modules.device_config")
 require("modules.device_types")  -- load type handler registry
 local mcp_server_mod = require("modules.mcp_server")
@@ -41,10 +42,16 @@ local function build_mcp_server()
     _mcp = mcp_server_mod.create_mcp_server({
         server_name = "c4mcp",
         server_version = C4:GetDriverConfigInfo("version") or "1.0.0",
+        instructions = "Control4 smart home MCP server. Use get_home to discover rooms and devices. "
+            .. "Use get_devices to read device state and available actions. Use control_device to control devices. "
+            .. "Use get_media to see what's playing in each room (now-playing, volume, available sources). "
+            .. "Use control_media to control media: play/pause/skip, volume, mute, select source, join another room's session, or turn off a room. "
+            .. "Media is room-centric — control rooms, not individual media devices.",
     })
     c4_home.register_read_tools(_mcp)
     c4_home.register_resources(_mcp)
     control_mod.register_control_tools(_mcp)
+    c4_media.register_media_tools(_mcp)
     return _mcp
 end
 
