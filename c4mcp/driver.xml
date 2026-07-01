@@ -98,7 +98,7 @@
           <item>Allowlist</item>
           <item>Blocklist</item>
         </items>
-        <default>Allow All</default>
+        <default>Allowlist</default>
       </property>
       <property>
         <name>Write Control Devices</name>

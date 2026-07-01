@@ -208,7 +208,7 @@ function OnDriverLateInit()
     C4:UpdateProperty("Driver Version", C4:GetDriverConfigInfo("version"))
     device_config.load_config(Properties["Device Profiles"] or "")
     c4_home.refresh_cache()
-    control_mod.set_write_control_mode(Properties["Write Control Mode"] or "Allow All")
+    control_mod.set_write_control_mode(Properties["Write Control Mode"] or "Allowlist")
     start_server()
     start_watchdog()
     C4:ErrorLog("[c4mcp] OnDriverLateInit complete")
@@ -306,11 +306,23 @@ end
 
 EX_CMDS["GenerateAPIKey"] = function(tParams)
     local key_name = (tParams and tParams.Name and tParams.Name ~= "") and tParams.Name or ("key_" .. os.time())
-    -- Generate a random API key with mixed entropy sources, full SHA-256 output
-    local entropy = tostring(os.time())
-        .. tostring(math.random()) .. tostring(math.random()) .. tostring(math.random())
-        .. tostring(os.clock())
-    local key = C4:Hash("SHA256", entropy, { encoding = "HEX" })
+    -- HARDENED: derive the key from a cryptographically-secure RNG (lua-openssl RAND_bytes).
+    -- Falls back to the legacy mixed-entropy method only if lua-openssl is unavailable.
+    local key
+    local rnd_ok, rnd = pcall(function()
+        local openssl = require('openssl')
+        -- openssl.random(len, strong=true) -> cryptographically-strong random bytes
+        return openssl.random(32, true)
+    end)
+    if rnd_ok and type(rnd) == "string" and #rnd >= 16 then
+        key = C4:Hash("SHA256", rnd, { encoding = "HEX" })
+    else
+        C4:ErrorLog("[c4mcp] WARNING: lua-openssl CSPRNG unavailable; using weaker fallback entropy for API key")
+        local entropy = tostring(os.time())
+            .. tostring(math.random()) .. tostring(math.random()) .. tostring(math.random())
+            .. tostring(os.clock())
+        key = C4:Hash("SHA256", entropy, { encoding = "HEX" })
+    end
     local keys = C4:PersistGetValue("api_keys") or {}
     keys[#keys + 1] = {
         name = key_name,
@@ -321,7 +333,8 @@ EX_CMDS["GenerateAPIKey"] = function(tParams)
     C4:UpdateProperty("API Keys", format_api_keys_display(keys))
     C4:UpdateProperty("Last Generated Key", key)
     if Properties then Properties["Last Generated Key"] = key end
-    print("[c4mcp] Generated API key '" .. key_name .. "': " .. key)
+    -- HARDENED: do NOT write the plaintext key to the Director log.
+    print("[c4mcp] Generated API key '" .. key_name .. "' (value shown in 'Last Generated Key' property for 30s; not logged)")
     -- Auto-clear displayed key after 30 seconds
     C4:SetTimer(30000, function()
         C4:UpdateProperty("Last Generated Key", "")

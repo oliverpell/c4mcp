@@ -8,7 +8,7 @@ local device_types = require("modules.device_types")
 local M = {}
 
 -- Write control state
-local _write_mode = "Allow All"  -- "Allow All" / "Allowlist" / "Blocklist"
+local _write_mode = "Allowlist"  -- HARDENED DEFAULT (upstream shipped "Allow All"). Modes: "Allow All" / "Allowlist" / "Blocklist"
 local _write_devices = {}         -- {[deviceId] = true}
 
 --- Set the write control mode
