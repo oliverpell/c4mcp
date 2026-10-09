@@ -2,7 +2,6 @@
 -- Room-centric media status reading and control via get_media and control_media tools.
 
 local c4_home = require("modules.c4_home")
-local control_mod = require("modules.control")
 
 local M = {}
 
@@ -489,7 +488,7 @@ function M.register_media_tools(mcp_server)
             end
         end
         return result
-    end)
+    end, "read")
 
     -- control_media
     mcp_server:register_tool("control_media", {
@@ -511,6 +510,8 @@ function M.register_media_tools(mcp_server)
             required = {"room_id", "action"},
         },
     }, function(args)
+        -- Write Control (Allowlist / Blocklist) covers devices only, not rooms:
+        -- media is open to any key with write scope. A Read key cannot call this.
         if not args.action then
             return { content = {{ type = "text", text = "Error: action is required" }}, isError = true }
         end
@@ -530,15 +531,11 @@ function M.register_media_tools(mcp_server)
             local count = 0
             local skipped = 0
             for _, rid in ipairs(media_rooms) do
-                if not control_mod.is_write_allowed(rid) then
-                    skipped = skipped + 1
+                local msg = dispatch_action(rid, args.action, args.params, send_fn)
+                if msg then
+                    count = count + 1
                 else
-                    local msg = dispatch_action(rid, args.action, args.params, send_fn)
-                    if msg then
-                        count = count + 1
-                    else
-                        skipped = skipped + 1
-                    end
+                    skipped = skipped + 1
                 end
             end
             local text = args.action .. " sent to " .. count .. " rooms"
@@ -561,13 +558,6 @@ function M.register_media_tools(mcp_server)
             return { content = {{ type = "text", text = "Error: Room " .. room.name .. " (" .. room_id .. ") is not media-capable" }}, isError = true }
         end
 
-        -- Check write access
-        if not control_mod.is_write_allowed(room_id) then
-            local room = c4_home.get_room(room_id)
-            local room_name = room and room.name or tostring(room_id)
-            return { content = {{ type = "text", text = "Error: Room " .. room_name .. " (" .. room_id .. ") is not allowed for write operations" }}, isError = true }
-        end
-
         local msg, err = dispatch_action(room_id, args.action, args.params, send_fn)
         if not msg then
             return { content = {{ type = "text", text = "Error: " .. err }}, isError = true }
@@ -576,7 +566,7 @@ function M.register_media_tools(mcp_server)
         local room = c4_home.get_room(room_id)
         local room_name = room and room.name or tostring(room_id)
         return { content = {{ type = "text", text = room_name .. ": " .. msg }}, isError = false }
-    end)
+    end, "write")
 end
 
 return M

@@ -5,6 +5,22 @@ local M = {}
 
 local PROTOCOL_VERSION = "2025-03-26"
 
+-- API key scopes, lowest to highest. A key can use any tool whose required
+-- scope is at or below its own: read < write (device and media control) <
+-- full (admin: editing Device Profiles).
+local SCOPE_LEVELS = { read = 1, write = 2, full = 3 }
+M.SCOPE_LEVELS = SCOPE_LEVELS
+
+--- Does the caller's scope reach the required scope?
+-- A nil caller (no authenticated key) reaches nothing.
+-- @param caller table|nil {key_name, scope}
+-- @param required string "read" | "write" | "full"
+-- @return boolean
+function M.scope_allows(caller, required)
+    local have = caller and SCOPE_LEVELS[caller.scope] or 0
+    return have >= (SCOPE_LEVELS[required] or SCOPE_LEVELS.full)
+end
+
 --- Check if a Lua table is an array (consecutive integer keys 1..n)
 -- Sentinel key to force a table to serialize as a JSON object (not array).
 -- Usage: { [JSON_OBJECT] = true }  -->  "{}"
@@ -82,8 +98,9 @@ function M.create_mcp_server(opts)
     }
 
     --- Register a tool
-    function server:register_tool(name, schema, handler_fn)
-        self._tools[name] = { schema = schema, handler = handler_fn }
+    -- @param scope string|nil Scope a key needs to see and call it; defaults to "full"
+    function server:register_tool(name, schema, handler_fn, scope)
+        self._tools[name] = { schema = schema, handler = handler_fn, scope = scope or "full" }
     end
 
     --- Register a static resource
@@ -98,6 +115,13 @@ function M.create_mcp_server(opts)
         self._templates[#self._templates + 1] = {
             uriTemplate = uri_template, name = name, description = description, handler = handler_fn,
         }
+    end
+
+    -- Strip the "path/file.lua:123: " position prefix that Lua prepends to
+    -- errors, so controller filesystem paths and line numbers never reach a
+    -- client. Keeps the human-readable message (e.g. "Device not found: 5").
+    local function clean_err(e)
+        return (tostring(e):gsub("^.-[^%s:]+%.lua:%d+:%s*", ""))
     end
 
     -- Internal: make a JSON-RPC error response
@@ -147,24 +171,27 @@ function M.create_mcp_server(opts)
         return rpc_result(id, { [JSON_OBJECT] = true })
     end
 
-    methods["tools/list"] = function(id, params)
+    methods["tools/list"] = function(id, params, caller)
         local tools = {}
         for name, tool in pairs(server._tools) do
-            local schema = tool.schema.inputSchema or { type = "object", properties = { [JSON_OBJECT] = true } }
-            -- Ensure properties serializes as JSON object {} not array []
-            if schema.properties and not schema.properties[JSON_OBJECT] and next(schema.properties) == nil then
-                schema = { type = schema.type, properties = { [JSON_OBJECT] = true }, required = schema.required }
+            -- Only list tools this key's scope can call
+            if M.scope_allows(caller, tool.scope) then
+                local schema = tool.schema.inputSchema or { type = "object", properties = { [JSON_OBJECT] = true } }
+                -- Ensure properties serializes as JSON object {} not array []
+                if schema.properties and not schema.properties[JSON_OBJECT] and next(schema.properties) == nil then
+                    schema = { type = schema.type, properties = { [JSON_OBJECT] = true }, required = schema.required }
+                end
+                tools[#tools + 1] = {
+                    name = name,
+                    description = tool.schema.description or "",
+                    inputSchema = schema,
+                }
             end
-            tools[#tools + 1] = {
-                name = name,
-                description = tool.schema.description or "",
-                inputSchema = schema,
-            }
         end
         return rpc_result(id, { tools = tools })
     end
 
-    methods["tools/call"] = function(id, params)
+    methods["tools/call"] = function(id, params, caller)
         if not params or not params.name then
             return rpc_error(id, -32602, "Missing tool name")
         end
@@ -175,10 +202,19 @@ function M.create_mcp_server(opts)
                 isError = true,
             })
         end
-        local ok, result = pcall(tool.handler, params.arguments or {})
-        if not ok then
+        if not M.scope_allows(caller, tool.scope) then
             return rpc_result(id, {
-                content = {{ type = "text", text = "Error: " .. tostring(result) }},
+                content = {{ type = "text", text = "Error: this API key (scope: " .. tostring(caller and caller.scope or "none")
+                    .. ") cannot use '" .. params.name .. "', which needs a " .. tool.scope .. " key" }},
+                isError = true,
+            })
+        end
+        local ok, result = pcall(tool.handler, params.arguments or {}, caller)
+        if not ok then
+            -- Unexpected Lua error in a handler: log full detail, return generic.
+            C4:ErrorLog("[c4mcp] tool '" .. tostring(params.name) .. "' error: " .. tostring(result))
+            return rpc_result(id, {
+                content = {{ type = "text", text = "Error: internal error executing tool" }},
                 isError = true,
             })
         end
@@ -206,9 +242,12 @@ function M.create_mcp_server(opts)
         return rpc_result(id, { resources = resources })
     end
 
-    methods["resources/read"] = function(id, params)
+    methods["resources/read"] = function(id, params, caller)
         if not params or not params.uri then
             return rpc_error(id, -32602, "Missing resource URI")
+        end
+        if not M.scope_allows(caller, "read") then
+            return rpc_error(id, -32001, "This API key cannot read resources")
         end
         -- Try static resources
         for _, r in ipairs(server._resources) do
@@ -219,7 +258,7 @@ function M.create_mcp_server(opts)
                         contents = {{ uri = params.uri, text = type(result) == "string" and result or json_encode(result) }},
                     })
                 else
-                    return rpc_error(id, -32603, tostring(result))
+                    return rpc_error(id, -32603, clean_err(result))
                 end
             end
         end
@@ -236,7 +275,7 @@ function M.create_mcp_server(opts)
                         contents = {{ uri = params.uri, text = type(result) == "string" and result or json_encode(result) }},
                     })
                 else
-                    return rpc_error(id, -32603, tostring(result))
+                    return rpc_error(id, -32603, clean_err(result))
                 end
             end
         end
@@ -261,8 +300,9 @@ function M.create_mcp_server(opts)
 
     --- Handle a JSON-RPC message
     -- @param json_string string Raw JSON-RPC request
+    -- @param caller table|nil Authenticated key {key_name, scope}; nil gets no tools or resources
     -- @return string|nil JSON-RPC response string, or nil for notifications
-    function server:handle_message(json_string)
+    function server:handle_message(json_string, caller)
         -- Parse JSON
         local msg = C4:JsonDecode(json_string)
         if not msg then
@@ -287,7 +327,7 @@ function M.create_mcp_server(opts)
             return rpc_error(msg.id, -32601, "Method not found: " .. msg.method)
         end
 
-        local result = handler(msg.id, msg.params)
+        local result = handler(msg.id, msg.params, caller)
         if is_notification then return nil end
         return result
     end

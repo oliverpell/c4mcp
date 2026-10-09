@@ -9,6 +9,7 @@ local device_config = require("modules.device_config")
 require("modules.device_types")  -- load type handler registry
 local mcp_server_mod = require("modules.mcp_server")
 local auth_mod = require("modules.auth")
+local random_mod = require("modules.random")
 local server_mod = require("modules.server")
 
 do -- globals
@@ -66,10 +67,15 @@ local function load_auth_validator()
     return auth_mod.create_auth_validator({
         validate_fn = function(token)
             local h = auth_mod.hash_api_key(token)
+            local matched = nil
+            -- Check every key without stopping early, in constant time per key
             for _, entry in ipairs(keys) do
-                if entry.hash == h then return true end
+                if auth_mod.constant_time_equals(tostring(entry.hash or ""):lower(), h) then
+                    matched = entry
+                end
             end
-            return false
+            if not matched then return nil end
+            return { key_name = matched.name, scope = matched.scope }
         end,
     })
 end
@@ -196,19 +202,67 @@ end
 local function start_watchdog()
     if _watchdog_timer then _watchdog_timer:Cancel() end
     _watchdog_timer = C4:SetTimer(60000, function()
-        if _server_handle and not _server_handle:is_alive() then
+        if _server_handle and not _server_handle:is_alive() and not _server_handle:is_retrying() then
             C4:ErrorLog("[c4mcp] Watchdog: server not alive, restarting...")
             start_server()
         end
     end, true)  -- repeat = true
 end
 
+--- Parse a DEVICE_SELECTOR value ("12,34") into an array of numbers
+local function parse_device_ids(value)
+    local ids = {}
+    for id in (value or ""):gmatch("%d+") do
+        ids[#ids + 1] = tonumber(id)
+    end
+    return ids
+end
+
+local function apply_write_control_devices(value)
+    control_mod.set_write_control_devices(parse_device_ids(value))
+end
+
+--- In Blocklist mode, add devices not seen before that are not a safe type
+-- @param reset boolean Rebuild the list from scratch (Reset Write Control to Default)
+local function sync_default_blocklist(reset)
+    if not reset and Properties["Write Control Mode"] ~= "Blocklist" then return end
+    local seen = (not reset) and C4:PersistGetValue("write_control_seen") or nil
+    local current = reset and {} or parse_device_ids(Properties["Write Control Devices"])
+    local ids, new_seen, changed = control_mod.update_default_blocklist(c4_home.list_devices(), current, seen)
+    C4:PersistSetValue("write_control_seen", new_seen)
+    if changed or reset then
+        local value = table.concat(ids, ",")
+        C4:UpdateProperty("Write Control Devices", value)
+        if Properties then Properties["Write Control Devices"] = value end
+        apply_write_control_devices(value)
+        C4:ErrorLog("[c4mcp] Write Control blocklist now " .. #ids .. " device(s)")
+    end
+end
+
+local function refresh_devices()
+    c4_home.refresh_cache()
+    sync_default_blocklist(false)
+end
+
+local migrate_api_keys  -- defined with the key management commands below
+
+--- Blank Last Generated Key everywhere it is copied, including TestBridge's
+--- PROPERTIES_JSON variable (UpdateProperty does not fire OnPropertyChanged)
+local function clear_last_generated_key()
+    C4:UpdateProperty("Last Generated Key", "")
+    if Properties then Properties["Last Generated Key"] = "" end
+end
+
 function OnDriverLateInit()
     C4:ErrorLog("[c4mcp] OnDriverLateInit starting")
     C4:UpdateProperty("Driver Version", C4:GetDriverConfigInfo("version"))
+    -- A restart inside the 30 s display window would otherwise leave the key showing for good
+    if (Properties["Last Generated Key"] or "") ~= "" then clear_last_generated_key() end
+    migrate_api_keys()
     device_config.load_config(Properties["Device Profiles"] or "")
-    c4_home.refresh_cache()
-    control_mod.set_write_control_mode(Properties["Write Control Mode"] or "Allow All")
+    control_mod.set_write_control_mode(Properties["Write Control Mode"] or "Blocklist")
+    apply_write_control_devices(Properties["Write Control Devices"])
+    refresh_devices()
     start_server()
     start_watchdog()
     C4:ErrorLog("[c4mcp] OnDriverLateInit complete")
@@ -259,14 +313,11 @@ end
 
 ON_PROPERTY_CHANGED["Write Control Mode"] = function(value)
     control_mod.set_write_control_mode(value)
+    sync_default_blocklist(false)
 end
 
 ON_PROPERTY_CHANGED["Write Control Devices"] = function(value)
-    local ids = {}
-    for id in (value or ""):gmatch("%d+") do
-        ids[#ids + 1] = tonumber(id)
-    end
-    control_mod.set_write_control_devices(ids)
+    apply_write_control_devices(value)
 end
 
 function ExecuteCommand(strCommand, tParams)
@@ -280,11 +331,19 @@ function ExecuteCommand(strCommand, tParams)
 end
 
 EX_CMDS["REFRESH_DEVICES"] = function()
-    c4_home.refresh_cache()
+    refresh_devices()
 end
 
 EX_CMDS["RefreshDeviceCache"] = function()
+    refresh_devices()
+end
+
+EX_CMDS["ResetWriteControl"] = function()
+    C4:UpdateProperty("Write Control Mode", "Blocklist")
+    if Properties then Properties["Write Control Mode"] = "Blocklist" end
+    control_mod.set_write_control_mode("Blocklist")
     c4_home.refresh_cache()
+    sync_default_blocklist(true)
 end
 
 EX_CMDS["PurgeConnections"] = function()
@@ -299,33 +358,67 @@ local function format_api_keys_display(keys)
     local parts = {}
     for _, entry in ipairs(keys) do
         local suffix = entry.last4 and (" ..." .. entry.last4) or ""
-        parts[#parts + 1] = entry.name .. suffix
+        parts[#parts + 1] = entry.name .. suffix .. " (" .. tostring(entry.scope) .. ")"
     end
     return table.concat(parts, ", ")
 end
 
+--- Keys made before scopes existed could do everything: keep that by making them Full.
+-- Also refreshes the API Keys property so it shows each key's scope.
+migrate_api_keys = function()
+    local keys = C4:PersistGetValue("api_keys") or {}
+    local changed = false
+    for _, entry in ipairs(keys) do
+        if not entry.scope then
+            entry.scope = "full"
+            changed = true
+        end
+    end
+    if changed then
+        C4:PersistSetValue("api_keys", keys)
+        C4:ErrorLog("[c4mcp] Existing API keys set to scope full")
+    end
+    C4:UpdateProperty("API Keys", format_api_keys_display(keys))
+end
+
 EX_CMDS["GenerateAPIKey"] = function(tParams)
     local key_name = (tParams and tParams.Name and tParams.Name ~= "") and tParams.Name or ("key_" .. os.time())
-    -- Generate a random API key with mixed entropy sources, full SHA-256 output
-    local entropy = tostring(os.time())
-        .. tostring(math.random()) .. tostring(math.random()) .. tostring(math.random())
-        .. tostring(os.clock())
-    local key = C4:Hash("SHA256", entropy, { encoding = "HEX" })
+    -- Scope: Read / Write / Full. Missing means Read, the least privilege.
+    local scope = tostring((tParams and tParams.Scope) or ""):lower()
+    if scope == "" then scope = "read" end
+    if not mcp_server_mod.SCOPE_LEVELS[scope] then
+        C4:ErrorLog("[c4mcp] API key not generated: unknown scope '" .. scope .. "'")
+        print("[c4mcp] ERROR: API key not generated: Scope must be Read, Write or Full")
+        return
+    end
+    -- Names must be unique, so revoking by name always revokes what the owner expects
+    for _, entry in ipairs(C4:PersistGetValue("api_keys") or {}) do
+        if entry.name == key_name then
+            C4:ErrorLog("[c4mcp] API key not generated: a key named '" .. key_name .. "' already exists")
+            print("[c4mcp] ERROR: API key not generated: a key named '" .. key_name .. "' already exists. Revoke it first or choose another name")
+            return
+        end
+    end
+    local key, err = random_mod.secret_hex()
+    if not key then
+        C4:ErrorLog("[c4mcp] API key not generated: " .. tostring(err))
+        print("[c4mcp] ERROR: API key not generated: " .. tostring(err))
+        return
+    end
     local keys = C4:PersistGetValue("api_keys") or {}
     keys[#keys + 1] = {
         name = key_name,
         hash = auth_mod.hash_api_key(key),
         last4 = key:sub(-4),
+        scope = scope,
     }
     C4:PersistSetValue("api_keys", keys)
     C4:UpdateProperty("API Keys", format_api_keys_display(keys))
     C4:UpdateProperty("Last Generated Key", key)
     if Properties then Properties["Last Generated Key"] = key end
-    print("[c4mcp] Generated API key '" .. key_name .. "': " .. key)
+    print("[c4mcp] Generated API key '" .. key_name .. "' (..." .. key:sub(-4) .. ", scope " .. scope .. ")")
     -- Auto-clear displayed key after 30 seconds
-    C4:SetTimer(30000, function()
-        C4:UpdateProperty("Last Generated Key", "")
-    end, false)
+    C4:SetTimer(30000, clear_last_generated_key, false)
     reload_auth()
 end
 
@@ -333,27 +426,23 @@ EX_CMDS["RevokeAPIKey"] = function(tParams)
     local key_name = tParams and tParams.Name
     if not key_name or key_name == "" then return end
     local keys = C4:PersistGetValue("api_keys") or {}
+    -- Remove every key with this name (duplicates may exist from before names were unique)
     for i = #keys, 1, -1 do
         if keys[i].name == key_name then
             table.remove(keys, i)
-            break
         end
     end
     C4:PersistSetValue("api_keys", keys)
     C4:UpdateProperty("API Keys", format_api_keys_display(keys))
-    C4:UpdateProperty("Last Generated Key", "")
+    clear_last_generated_key()
     reload_auth()
 end
 
 EX_CMDS["RevokeAllAPIKeys"] = function()
-    -- Preserve TLS credentials across key revocation
-    local cert = C4:PersistGetValue("tls_cert")
-    local key = C4:PersistGetValue("tls_key")
-    C4:PersistDeleteAll()
-    if cert and cert ~= "" then C4:PersistSetValue("tls_cert", cert) end
-    if key and key ~= "" then C4:PersistSetValue("tls_key", key) end
+    -- Delete only the keys; TLS credentials and other persisted state stay
+    C4:PersistDeleteValue("api_keys")
     C4:UpdateProperty("API Keys", "No keys")
-    C4:UpdateProperty("Last Generated Key", "")
+    clear_last_generated_key()
     reload_auth()
 end
 

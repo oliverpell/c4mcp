@@ -8,8 +8,52 @@ local device_types = require("modules.device_types")
 local M = {}
 
 -- Write control state
-local _write_mode = "Allow All"  -- "Allow All" / "Allowlist" / "Blocklist"
+local _write_mode = "Blocklist"  -- "Allow All" / "Allowlist" / "Blocklist"
 local _write_devices = {}         -- {[deviceId] = true}
+
+-- Device types that are safe for AI control by default. Judged by proxy type
+-- only (fixed by the driver), never by Device Profiles, which MCP clients can edit.
+-- Every other controllable device starts on the blocklist.
+M.SAFE_TYPES = { light = true, thermostat = true, blind = true }
+
+--- Work out the default blocklist, adding devices not seen before
+-- A device is added only the first time it is seen, so devices the owner
+-- removed from the list stay removed.
+-- @param devices table Array of {id, type} (from c4_home.list_devices)
+-- @param current_ids table Array of device IDs currently on the list
+-- @param seen table|nil {[tostring(id)] = true} of devices already considered, nil if never filled
+-- @return table New array of device IDs (sorted)
+-- @return table New seen set
+-- @return boolean True if the list changed
+function M.update_default_blocklist(devices, current_ids, seen)
+    local on_list = {}
+    local ids = {}
+    for _, id in ipairs(current_ids or {}) do
+        if not on_list[id] then
+            on_list[id] = true
+            ids[#ids + 1] = id
+        end
+    end
+    -- Never filled before but the owner already has a list: keep it as is,
+    -- and only treat devices added from now on as new
+    local adopt_existing = (seen == nil) and #ids > 0
+    local new_seen = {}
+    for k, v in pairs(seen or {}) do new_seen[k] = v end
+    local changed = false
+    for _, dev in ipairs(devices or {}) do
+        local key = tostring(dev.id)
+        if not new_seen[key] then
+            new_seen[key] = true
+            if not adopt_existing and not M.SAFE_TYPES[dev.type] and not on_list[dev.id] then
+                on_list[dev.id] = true
+                ids[#ids + 1] = dev.id
+                changed = true
+            end
+        end
+    end
+    table.sort(ids)
+    return ids, new_seen, changed
+end
 
 --- Set the write control mode
 function M.set_write_control_mode(mode)
@@ -32,7 +76,7 @@ function M.is_write_allowed(device_id)
     if _write_mode == "Allow All" then return true end
     if _write_mode == "Allowlist" then return _write_devices[device_id] == true end
     if _write_mode == "Blocklist" then return _write_devices[device_id] ~= true end
-    return true
+    return false
 end
 
 --- Validate write access for a device
@@ -48,7 +92,7 @@ function M.validate_write_access(device_id)
         return { ok = false, error = "Device " .. tostring(device_id) .. " not found" }
     end
     if not M.is_write_allowed(device_id) then
-        return { ok = false, error = "Device " .. tostring(device_id) .. " (" .. dev.name .. ") is not allowed for write operations" }
+        return { ok = false, error = "Device " .. tostring(device_id) .. " (" .. dev.name .. ") is blocked by the driver's Write Control setting. Only the home owner can allow it, in Composer Pro" }
     end
     return { ok = true }
 end
@@ -72,6 +116,37 @@ function M.validate_device_type(device_id, expected_type)
     return { ok = true }
 end
 
+--- Check a command's final target, after any @parent redirection
+-- A proxy must itself be allowed. Any other target is a parent (protocol
+-- driver) reached through @parent. The Write Control list only holds proxies,
+-- so a parent is allowed only when every proxy it drives is allowed, except:
+--   sensors are ignored (inputs only; nothing to command), and
+--   proxies the owner cannot put on the list (unrecognised or media types)
+--   refuse @parent unless the mode is Allow All.
+-- @param device_id number
+-- @return boolean, string|nil ok, or false + error message
+function M.check_command_target(device_id)
+    if c4_home.get_device(device_id) then
+        if M.is_write_allowed(device_id) then return true end
+        return false, "Device " .. tostring(device_id) .. " is blocked by the driver's Write Control setting. Only the home owner can allow it, in Composer Pro"
+    end
+    local children = c4_home.get_child_devices(device_id)
+    if #children == 0 then
+        return false, "Device " .. tostring(device_id) .. " is not a device this driver can command"
+    end
+    if _write_mode == "Allow All" then return true end
+    for _, child_id in ipairs(children) do
+        local child = c4_home.get_device(child_id)
+        local child_type = child and child.type
+        if child_type == nil or child_type == "media" then
+            return false, "Device " .. tostring(device_id) .. " is blocked by Write Control: its driver also controls devices that cannot be put on the Write Control list"
+        elseif child_type ~= "sensor" and not M.is_write_allowed(child_id) then
+            return false, "Device " .. tostring(device_id) .. " is blocked by Write Control: its driver also controls a device you have not allowed"
+        end
+    end
+    return true
+end
+
 --- Send a command to a device
 -- @param device_id number
 -- @param command string C4 command name
@@ -79,6 +154,9 @@ end
 -- @return string|nil Success message, or nil on error
 -- @return string|nil Error message on failure
 function M.send_device_command(device_id, command, params)
+    -- Re-check the resolved target (dispatch may have redirected to @parent).
+    local allowed, target_err = M.check_command_target(device_id)
+    if not allowed then return nil, target_err end
     local dev = c4_home.get_device(device_id)
     local ok, err = pcall(C4.SendToDevice, C4, device_id, command, params or {})
     if not ok then
@@ -139,7 +217,7 @@ function M.register_control_tools(mcp_server)
         -- Dispatch via device_types
         local msg, err = device_types.dispatch(dev.type, device_id, dev, args.action, params, M.send_device_command)
         return tool_success(msg, err)
-    end)
+    end, "write")
 
     -- control_devices (batch)
     mcp_server:register_tool("control_devices", {
@@ -216,7 +294,7 @@ function M.register_control_tools(mcp_server)
             results = results,
             summary = { total = #results, succeeded = succeeded, failed = failed },
         }
-    end)
+    end, "write")
 
     -- set_device_profiles
     mcp_server:register_tool("set_device_profiles", {
@@ -232,13 +310,18 @@ function M.register_control_tools(mcp_server)
         local profiles = args.profiles
         local ok, err = device_config.validate_profiles(profiles)
         if not ok then return tool_error(err) end
+        for device_id_str in pairs(profiles) do
+            if not c4_home.get_device(tonumber(device_id_str)) then
+                return tool_error("Device " .. tostring(device_id_str) .. " not found")
+            end
+        end
         local json_str = C4:JsonEncode(profiles)
         device_config.load_config(json_str)
         C4:UpdateProperty("Device Profiles", json_str)
         local count = 0
         for _ in pairs(profiles) do count = count + 1 end
         return { content = {{ type = "text", text = "OK: Device Profiles updated (" .. count .. " device(s) configured)" }}, isError = false }
-    end)
+    end, "full")
 end
 
 return M

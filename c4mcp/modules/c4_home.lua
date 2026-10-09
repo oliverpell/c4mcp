@@ -9,6 +9,7 @@ local M = {}
 -- Internal caches
 local _rooms = {}     -- {[roomId] = {id, name, floor}}
 local _devices = {}   -- {[deviceId] = {id, name, type, room_id, room_name, driver_name}}
+local _children = {}  -- {[parentId] = {proxyId, ...}} every proxy under each parent device
 local _scale = "C"    -- Temperature scale from project
 -- Media source caches (built in refresh_cache)
 local _room_sources = {}  -- {[roomId] = {sources=[], listen_ids={}, watch_ids={}}}
@@ -117,6 +118,7 @@ end
 function M.refresh_cache()
     _rooms = {}
     _devices = {}
+    _children = {}
 
     local xml = C4:GetProjectItems()
     if not xml or xml == "" then return end
@@ -271,6 +273,15 @@ function M.refresh_cache()
                 dev.room_id = rid
                 dev.room_name = _rooms[rid] and _rooms[rid].name or ""
             end
+        end
+    end
+
+    -- Every proxy under each parent device, for checking @parent sends
+    -- (including types this driver does not expose, which the owner cannot list).
+    for did, dev in pairs(_devices) do
+        if dev.parent_id then
+            _children[dev.parent_id] = _children[dev.parent_id] or {}
+            table.insert(_children[dev.parent_id], did)
         end
     end
 
@@ -563,6 +574,16 @@ function M.get_device(deviceId)
     return _devices[deviceId]
 end
 
+--- Get every proxy under a parent device
+-- @param parentId number Parent (protocol driver) device ID
+-- @return table Sorted array of proxy IDs (empty if none)
+function M.get_child_devices(parentId)
+    local ids = {}
+    for _, id in ipairs(_children[parentId] or {}) do ids[#ids + 1] = id end
+    table.sort(ids)
+    return ids
+end
+
 --- Get a room from cache
 -- @param roomId number
 -- @return table|nil
@@ -717,7 +738,7 @@ function M.register_read_tools(mcp_server)
             active_lights = active_lights,
             device_types = type_counts,
         }
-    end)
+    end, "read")
 
     -- get_devices
     mcp_server:register_tool("get_devices", {
@@ -769,7 +790,7 @@ function M.register_read_tools(mcp_server)
             dev.state = filter_state(M.get_device_state(dev.id, vars_cache))
         end
         return devices
-    end)
+    end, "read")
 
     -- get_device_profiles
     mcp_server:register_tool("get_device_profiles", {
@@ -788,7 +809,7 @@ function M.register_read_tools(mcp_server)
                 builtin_profiles = builtin_count,
             },
         }
-    end)
+    end, "read")
 
     -- configure_device_profiles
     mcp_server:register_tool("configure_device_profiles", {
@@ -899,7 +920,7 @@ Follow these steps to configure device profiles:
 
 7. Verify by calling `get_devices` with device_id on configured devices to confirm the new profiles appear correctly.]] }},
         }
-    end)
+    end, "full")
 end
 
 --- Register MCP resources

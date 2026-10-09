@@ -6,14 +6,14 @@
   <creator>Oliver Pell</creator>
   <created>02/21/2026 10:00</created>
   <modified>02/22/2026 9:53 AM</modified>
-  <version>2</version>
+  <version>3</version>
   <control>lua_gen</control>
   <driver>DriverWorks</driver>
   <small>locations_sm\lab.gif</small>
   <large>locations_lg\lab.gif</large>
   <auto_update>true</auto_update>
   <minimum_auto_update_version>1</minimum_auto_update_version>
-  <minimum_os_version>2.10.5</minimum_os_version>
+  <minimum_os_version>3.3.0</minimum_os_version>
   <composer_categories>
     <category>Controllers</category>
   </composer_categories>
@@ -98,7 +98,7 @@
           <item>Allowlist</item>
           <item>Blocklist</item>
         </items>
-        <default>Allow All</default>
+        <default>Blocklist</default>
       </property>
       <property>
         <name>Write Control Devices</name>
@@ -141,6 +141,15 @@
             <name>Name</name>
             <type>STRING</type>
           </param>
+          <param>
+            <name>Scope</name>
+            <type>LIST</type>
+            <items>
+              <item>Read</item>
+              <item>Write</item>
+              <item>Full</item>
+            </items>
+          </param>
         </params>
       </action>
       <action>
@@ -156,6 +165,10 @@
       <action>
         <name>Revoke All API Keys</name>
         <command>RevokeAllAPIKeys</command>
+      </action>
+      <action>
+        <name>Reset Write Control to Default</name>
+        <command>ResetWriteControl</command>
       </action>
       <action>
         <name>Refresh Device Cache</name>

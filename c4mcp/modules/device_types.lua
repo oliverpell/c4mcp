@@ -131,6 +131,10 @@ function M.dispatch(type_name, device_id, dev, action, params, send_cmd)
     end
 
     if action_def then
+        -- Refuse driver-plumbing commands even if a profile was edited by hand in Composer
+        if device_config.is_forbidden_command(action_def.command) then
+            return nil, "Command '" .. tostring(action_def.command) .. "' is not allowed in Device Profiles"
+        end
         local user_params = params or {}
         -- Validate params
         if action_def.params and next(action_def.params) then

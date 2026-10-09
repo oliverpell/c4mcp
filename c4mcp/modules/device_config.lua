@@ -99,7 +99,7 @@ function M.parse_action_string(str)
     end
 
     -- Check for params in parens: COMMAND(...)
-    local command, params_str = str:match("^(%S+)%((.+)%)$")
+    local command, params_str = str:match("^([%w_]+)%((.+)%)$")
     if not command then
         -- No params - plain command (alphanumeric/underscore only)
         command = str:match("^([%w_]+)$")
@@ -194,14 +194,18 @@ function M.validate_params(action_def, params)
 end
 
 --- Build C4 command params from user params (convert to string values for C4)
+-- Only the parameters the action declares are sent; anything else the caller
+-- adds is dropped, so a profile action cannot carry extra parameters.
 -- @param action_def table Parsed action definition
 -- @param params table User-provided params
 -- @return table C4 command params
 function M.build_c4_params(action_def, params)
     if not params then return {} end
     local c4_params = {}
-    for name, val in pairs(params) do
-        c4_params[name] = tostring(val)
+    for name in pairs((action_def and action_def.params) or {}) do
+        if params[name] ~= nil then
+            c4_params[name] = tostring(params[name])
+        end
     end
     return c4_params
 end
@@ -245,23 +249,28 @@ function M.load_config(json_string)
         C4:ErrorLog("device_config: invalid JSON in Device Profiles, keeping previous config")
         return
     end
-    -- Parse each entry
+    -- Parse each entry, skipping any that fail validation (e.g. edited by hand in Composer)
     local config = {}
     for device_id_str, entry in pairs(decoded) do
-        local parsed = {}
-        if entry.category then parsed.category = entry.category end
-        if entry.states then parsed.states = parse_config_states(entry.states) end
-        if entry.actions then parsed.actions = parse_config_actions(entry.actions) end
-        if entry.extra_vars then
-            local normalized = {}
-            for _, v in pairs(entry.extra_vars) do
-                normalized[#normalized + 1] = v
+        local valid, err = M.validate_entry(device_id_str, entry, true)
+        if not valid then
+            C4:ErrorLog("device_config: skipping Device Profile for " .. tostring(device_id_str) .. ": " .. tostring(err))
+        else
+            local parsed = {}
+            if entry.category then parsed.category = entry.category end
+            if entry.states then parsed.states = parse_config_states(entry.states) end
+            if entry.actions then parsed.actions = parse_config_actions(entry.actions) end
+            if entry.extra_vars then
+                local normalized = {}
+                for _, v in pairs(entry.extra_vars) do
+                    normalized[#normalized + 1] = v
+                end
+                parsed.extra_vars = normalized
             end
-            parsed.extra_vars = normalized
+            if entry.setpoint_type then parsed.setpoint_type = entry.setpoint_type end
+            if entry.state_var then parsed.state_var = entry.state_var end
+            config[device_id_str] = parsed
         end
-        if entry.setpoint_type then parsed.setpoint_type = entry.setpoint_type end
-        if entry.state_var then parsed.state_var = entry.state_var end
-        config[device_id_str] = parsed
     end
     _user_config = config
 end
@@ -357,6 +366,134 @@ function M.resolve_config_action(config, action_name)
     return { command = action_def, target = "device", params = {} }
 end
 
+-- Commands a Device Profile may never send, whatever the target: driver
+-- plumbing (property and action entry points) and c4mcp's own commands.
+-- Compared upper-case.
+M.FORBIDDEN_COMMANDS = {}
+for _, cmd in ipairs({
+    "SET_PROPERTY", "GET_PROPERTIES", "LUA_ACTION", "FIRE_EVENT", "RESTORE_STATE", "GET_STATE_SNAPSHOT",
+    "GenerateAPIKey", "RevokeAPIKey", "RevokeAllAPIKeys", "ResetWriteControl", "RefreshDeviceCache",
+    "REFRESH_DEVICES", "PurgeConnections", "GenerateTLSCertificate", "ClearTLSCertificate",
+    "PrintTLSCertificate", "TestMCPResponse",
+}) do
+    M.FORBIDDEN_COMMANDS[cmd:upper()] = true
+end
+
+--- Is a command one that Device Profiles may never send?
+-- @param command string
+-- @return boolean
+function M.is_forbidden_command(command)
+    return type(command) == "string" and M.FORBIDDEN_COMMANDS[command:upper()] == true
+end
+
+-- Size limits for user-supplied profiles
+local LIMITS = {
+    devices = 100,       -- profiles per configuration
+    actions = 20,        -- actions per device
+    params = 8,          -- parameters per action
+    action_string = 200, -- characters in a compact action string
+    name = 64,           -- characters in names, labels, variable names
+    states = 32,         -- state labels per device
+    extra_vars = 10,     -- extra variables per device
+}
+M.LIMITS = LIMITS
+
+-- Profiles already saved in the property (possibly from before these limits
+-- existed) only need to pass the safety checks, so an upgrade never drops them.
+local NO_LIMITS = setmetatable({}, { __index = function() return math.huge end })
+
+local function short_string(v, max_len)
+    return type(v) == "string" and #v <= (max_len or LIMITS.name)
+end
+
+local function count_keys(t)
+    local n = 0
+    for _ in pairs(t) do n = n + 1 end
+    return n
+end
+
+--- Validate one device's profile entry
+-- @param device_id_str string Device ID key
+-- @param entry any Decoded JSON value
+-- @param lenient boolean|nil Skip size limits and action-name rules (profiles loaded from the property)
+-- @return boolean, string ok or false + error message
+function M.validate_entry(device_id_str, entry, lenient)
+    local LIMITS = lenient and NO_LIMITS or LIMITS
+    device_id_str = tostring(device_id_str)
+    if not device_id_str:match("^%d+$") then
+        return false, "Profile key '" .. device_id_str .. "' must be a numeric device ID"
+    end
+    if type(entry) ~= "table" then
+        return false, "Profile for device " .. device_id_str .. " must be an object"
+    end
+    if entry.category ~= nil and not short_string(entry.category, LIMITS.name) then
+        return false, "category for device " .. device_id_str .. " must be a string of at most " .. LIMITS.name .. " characters"
+    end
+    if entry.states ~= nil then
+        if type(entry.states) ~= "table" or count_keys(entry.states) > LIMITS.states then
+            return false, "states for device " .. device_id_str .. " must be an object with at most " .. LIMITS.states .. " entries"
+        end
+        for _, label in pairs(entry.states) do
+            if not short_string(label, LIMITS.name) then
+                return false, "State labels for device " .. device_id_str .. " must be strings of at most " .. LIMITS.name .. " characters"
+            end
+        end
+    end
+    if entry.actions ~= nil then
+        if type(entry.actions) ~= "table" then
+            return false, "actions for device " .. device_id_str .. " must be an object"
+        end
+        if count_keys(entry.actions) > LIMITS.actions then
+            return false, "Device " .. device_id_str .. " has more than " .. LIMITS.actions .. " actions"
+        end
+        for action_name, action_str in pairs(entry.actions) do
+            action_name = tostring(action_name)
+            if (not lenient and not action_name:match("^[%w_]+$")) or #action_name > LIMITS.name then
+                return false, "Action name '" .. action_name .. "' on device " .. device_id_str .. " must be letters, digits or _ (at most " .. LIMITS.name .. ")"
+            end
+            if type(action_str) ~= "string" then
+                return false, "Action '" .. action_name .. "' for device " .. device_id_str .. " must be a string"
+            end
+            if #action_str > LIMITS.action_string then
+                return false, "Action '" .. action_name .. "' for device " .. device_id_str .. " is longer than " .. LIMITS.action_string .. " characters"
+            end
+            local parsed = M.parse_action_string(action_str)
+            if not parsed then
+                return false, "Invalid action syntax '" .. action_str .. "' for action '" .. action_name .. "' on device " .. device_id_str
+            end
+            if M.is_forbidden_command(parsed.command) then
+                return false, "Command '" .. parsed.command .. "' (action '" .. action_name .. "' on device " .. device_id_str .. ") is not allowed in Device Profiles"
+            end
+            if count_keys(parsed.params) > LIMITS.params then
+                return false, "Action '" .. action_name .. "' on device " .. device_id_str .. " has more than " .. LIMITS.params .. " parameters"
+            end
+        end
+    end
+    if entry.extra_vars ~= nil then
+        if type(entry.extra_vars) ~= "table" or count_keys(entry.extra_vars) > LIMITS.extra_vars then
+            return false, "extra_vars for device " .. device_id_str .. " must be a list of at most " .. LIMITS.extra_vars .. " names"
+        end
+        for _, var_name in pairs(entry.extra_vars) do
+            if not short_string(var_name, LIMITS.name) then
+                return false, "extra_vars for device " .. device_id_str .. " must be strings of at most " .. LIMITS.name .. " characters"
+            end
+        end
+    end
+    if entry.state_var ~= nil and type(entry.state_var) ~= "string" then
+        return false, "state_var for device " .. device_id_str .. " must be a string"
+    end
+    if entry.state_var ~= nil and #entry.state_var > LIMITS.name then
+        return false, "state_var for device " .. device_id_str .. " must be at most " .. LIMITS.name .. " characters"
+    end
+    if entry.setpoint_type then
+        local valid_types = { single = true, heat = true, cool = true, heat_cool = true }
+        if not valid_types[entry.setpoint_type] then
+            return false, "setpoint_type for device " .. device_id_str .. " must be 'single', 'heat', 'cool', or 'heat_cool'"
+        end
+    end
+    return true
+end
+
 --- Validate a JSON profiles object (for set_device_profiles tool)
 -- @param profiles table Decoded JSON
 -- @return boolean, string ok or false + error message
@@ -364,38 +501,12 @@ function M.validate_profiles(profiles)
     if type(profiles) ~= "table" then
         return false, "profiles must be a JSON object"
     end
+    if count_keys(profiles) > LIMITS.devices then
+        return false, "At most " .. LIMITS.devices .. " devices can have profiles"
+    end
     for device_id_str, entry in pairs(profiles) do
-        if type(entry) ~= "table" then
-            return false, "Profile for device " .. tostring(device_id_str) .. " must be an object"
-        end
-        -- Validate actions if present
-        if entry.actions then
-            if type(entry.actions) ~= "table" then
-                return false, "actions for device " .. device_id_str .. " must be an object"
-            end
-            for action_name, action_str in pairs(entry.actions) do
-                if type(action_str) ~= "string" then
-                    return false, "Action '" .. action_name .. "' for device " .. device_id_str .. " must be a string"
-                end
-                local parsed = M.parse_action_string(action_str)
-                if not parsed then
-                    return false, "Invalid action syntax '" .. action_str .. "' for action '" .. action_name .. "' on device " .. device_id_str
-                end
-            end
-        end
-        -- Validate state_var if present
-        if entry.state_var ~= nil then
-            if type(entry.state_var) ~= "string" then
-                return false, "state_var for device " .. device_id_str .. " must be a string"
-            end
-        end
-        -- Validate setpoint_type if present
-        if entry.setpoint_type then
-            local valid_types = { single = true, heat = true, cool = true, heat_cool = true }
-            if not valid_types[entry.setpoint_type] then
-                return false, "setpoint_type for device " .. device_id_str .. " must be 'single', 'heat', 'cool', or 'heat_cool'"
-            end
-        end
+        local ok, err = M.validate_entry(device_id_str, entry)
+        if not ok then return false, err end
     end
     return true
 end

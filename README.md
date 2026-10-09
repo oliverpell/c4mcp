@@ -4,7 +4,7 @@
 
 A Control4 DriverWorks driver that exposes your smart home via the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) over HTTP. Point any MCP-compatible AI client — Claude Code, Claude Desktop, OpenClaw, etc. — at your controller and control your home with natural language.
 
-**Requires**: Control4 OS 2.10.5+. HTTPS requires OS 3.3.0+.
+**Requires**: Control4 OS 3.3.0+. Generating the HTTPS certificate on the controller requires OS 3.4.1+.
 
 ## What It Does
 
@@ -19,7 +19,7 @@ A Control4 DriverWorks driver that exposes your smart home via the [Model Contex
 
 1. [Download c4mcp.c4z](https://github.com/oliverpell/c4mcp/releases/latest/download/c4mcp.c4z) (or build from source — see [Building](#building))
 2. Install `c4mcp.c4z` on your controller via Composer Pro (search under Controllers)
-3. Go to the driver's **Actions** tab and press **Generate API Key**. Copy the key from the **Last Generated Key** property (auto-clears after 30s)
+3. Go to the driver's **Actions** tab and press **Generate API Key**, entering a name and choosing the **Write** scope (Read can only view; Full can also edit Device Profiles). Copy the key from the **Last Generated Key** property (auto-clears after 30s)
 4. Configure your MCP client to connect to `http://<controller-ip>:9201/mcp` with the API key as a Bearer token
 
 See the full [documentation](c4mcp/www/documentation.html) for client configuration examples, HTTPS setup, device profiles, troubleshooting, and more.

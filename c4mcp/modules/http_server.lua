@@ -56,11 +56,20 @@ function M.create_parser()
 
             -- Parse headers
             self.headers = {}
+            local cl_count = 0
             for line in header_block:gmatch("\r\n([^\r\n]+)") do
                 local name, value = line:match("^([^:]+):%s*(.*)")
                 if name then
-                    self.headers[name:lower()] = value
+                    local lname = name:lower()
+                    if lname == "content-length" then cl_count = cl_count + 1 end
+                    self.headers[lname] = value
                 end
+            end
+
+            -- Reject duplicate Content-Length (request smuggling guard)
+            if cl_count > 1 then
+                self.error = "Duplicate Content-Length"
+                return { error = self.error }
             end
 
             -- Reject unsupported transfer encoding
@@ -72,6 +81,12 @@ function M.create_parser()
             -- Determine body size
             local cl = self.headers["content-length"]
             if cl then
+                -- Only accept a plain run of digits: reject "0x10", "1e1", "10.5",
+                -- "-1", " 41 " and other tonumber-coercible forms.
+                if not cl:match("^%d+$") then
+                    self.error = "Invalid Content-Length"
+                    return { error = self.error }
+                end
                 self._content_length = tonumber(cl)
                 if not self._content_length or self._content_length < 0 then
                     self.error = "Invalid Content-Length"

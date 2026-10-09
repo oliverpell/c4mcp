@@ -25,13 +25,13 @@
 
 <p>The C4 MCP Server driver exposes your Control4 system to AI assistants (Claude Code, Claude Desktop, OpenClaw, or any MCP-compatible client) over the local network. An LLM can query device state, control lights, thermostats, blinds, locks, and more &ndash; all through natural language.</p>
 
-<p><strong>Requires</strong>: Control4 OS 2.10.5+. HTTPS requires OS 3.3.0+ (TLS cert generation requires OS 3.4.1+).</p>
+<p><strong>Requires</strong>: Control4 OS 3.3.0+ (HTTPS and secure API key generation). Generating the TLS certificate on the controller requires OS 3.4.1+.</p>
 
 <h2>Quick Start</h2>
 
 <ol>
   <li>Install <code>c4mcp.c4z</code> on the controller via Composer Pro (search under Controllers).</li>
-  <li>Go to the driver's <strong>Actions</strong> tab and press <strong>Generate API Key</strong>. Copy the key from the <strong>Last Generated Key</strong> property (it auto-clears after 30 seconds).</li>
+  <li>Go to the driver's <strong>Actions</strong> tab and press <strong>Generate API Key</strong>, choosing a name and a <a href="#key-scopes">scope</a>. Copy the key from the <strong>Last Generated Key</strong> property (it auto-clears after 30 seconds).</li>
   <li>Configure your MCP client to connect to <code>http://&lt;controller-ip&gt;:9201/mcp</code> with the API key as a Bearer token.</li>
 </ol>
 
@@ -63,7 +63,7 @@
   <dd>Server status: transport, port, and connected client count.</dd>
 
   <dt>API Keys <em>(read-only)</em></dt>
-  <dd>List of configured key names with last 4 characters of each.</dd>
+  <dd>Configured keys: name, last 4 characters and scope of each, e.g. <code>claude-code ...a3f9 (full)</code>.</dd>
 
   <dt>Last Generated Key</dt>
   <dd>Displays the full API key after generation. Auto-clears after 30 seconds. Copy it immediately.</dd>
@@ -78,15 +78,15 @@
   <dd>TCP port for the MCP server.</dd>
 
   <dt>Max Connections <em>(1&ndash;10, default 5)</em></dt>
-  <dd>Maximum simultaneous client connections.</dd>
+  <dd>Maximum simultaneous open connections. Each connection carries one request and closes when answered. When the limit is reached, a new connection closes the one that has waited longest, so idle connections cannot lock real clients out.</dd>
 
   <dt>Idle Timeout <em>(0&ndash;3600 sec, default 300)</em></dt>
-  <dd>Disconnect idle clients after this many seconds. 0 disables the timeout.</dd>
+  <dd>Close a connection that has not sent a complete request within this many seconds. The driver never waits longer than 5 seconds, whatever this is set to; a smaller value shortens it, and 0 uses the 5-second cap.</dd>
 
   <dt>Max Requests/sec <em>(1&ndash;100, default 30)</em></dt>
-  <dd>Per-client rate limit. Excess requests get HTTP 429.</dd>
+  <dd>Limit on failed or unauthenticated requests per second from one IP address, across all its connections; excess attempts get HTTP 429. Requests with a valid key are not limited.</dd>
 
-  <dt>Write Control Mode <em>(Allow All / Allowlist / Blocklist)</em></dt>
+  <dt>Write Control Mode <em>(Allow All / Allowlist / Blocklist, default Blocklist)</em></dt>
   <dd>Controls which devices can receive commands. See <a href="#write-control">Write Control</a> section.</dd>
 
   <dt>Write Control Devices</dt>
@@ -102,16 +102,19 @@
 
 <dl>
   <dt>Generate API Key</dt>
-  <dd>Creates a new API key with the given name. The key appears in the Last Generated Key property and Lua console output.</dd>
+  <dd>Creates a new API key with the given name and scope (Read, Write or Full; see <a href="#key-scopes">Key scopes</a>). The key appears once, in the Last Generated Key property, for 30 seconds &ndash; copy it then. The Lua console shows only the key name, last four characters and scope.</dd>
 
   <dt>Revoke API Key</dt>
   <dd>Revokes a single key by name.</dd>
 
   <dt>Revoke All API Keys</dt>
-  <dd>Revokes all keys. The server will deny all requests until a new key is generated. TLS certificates are preserved.</dd>
+  <dd>Revokes all keys. The server will deny all requests until a new key is generated. Only the keys are deleted; TLS certificates and other settings are kept.</dd>
 
   <dt>Refresh Device Cache</dt>
-  <dd>Re-reads the project to pick up newly added or removed devices.</dd>
+  <dd>Re-reads the project to pick up newly added or removed devices. In Blocklist mode, new devices that are not lights, thermostats or blinds are added to the blocklist.</dd>
+
+  <dt>Reset Write Control to Default</dt>
+  <dd>Sets Write Control Mode to Blocklist and rebuilds Write Control Devices with every device that is not a light, thermostat or blind. See <a href="#write-control">Write Control</a>.</dd>
 
   <dt>Test MCP Response</dt>
   <dd>Sends a ping to the MCP layer and shows "MCP OK" in Status if successful.</dd>
@@ -132,10 +135,20 @@
 <p>API keys are hashed (SHA-256) before storage &ndash; the plaintext key is only shown once at generation time.</p>
 
 <h3>Generating keys</h3>
-<p>In Composer Pro: Actions tab &ndash; Generate API Key &ndash; enter a name &ndash; key appears in the Last Generated Key property and Lua console output.</p>
+<p>In Composer Pro: Actions tab &ndash; Generate API Key &ndash; enter a name and choose a scope &ndash; the key appears in the Last Generated Key property for 30 seconds. Names must be unique. If no scope is chosen, the key gets Read.</p>
+
+<h3 id="key-scopes">Key scopes</h3>
+<p>Each key has a scope that decides which tools it can see and call. A key never sees tools above its scope, and calling one returns an error.</p>
+<table>
+<tr><th>Scope</th><th>Tools</th></tr>
+<tr><td><strong>Read</strong></td><td><code>get_home</code>, <code>get_devices</code>, <code>get_media</code>, <code>get_device_profiles</code>, and MCP resources</td></tr>
+<tr><td><strong>Write</strong></td><td>Read, plus <code>control_device</code>, <code>control_devices</code> and <code>control_media</code></td></tr>
+<tr><td><strong>Full</strong></td><td>Write, plus editing Device Profiles (<code>set_device_profiles</code>, <code>configure_device_profiles</code>)</td></tr>
+</table>
+<p>Give each client the lowest scope it needs. Scopes choose the tools; <a href="#write-control">Write Control</a> still chooses which devices Write and Full keys can command. Keys created before driver version 3 have the Full scope, so they keep working as before. Remote access, when it is added, will allow at most Write: changing Device Profiles will only be possible from the local network.</p>
 
 <h3>Revoking keys</h3>
-<p>Single key: Actions tab &ndash; Revoke API Key &ndash; enter the key name.<br>
+<p>Single key: Actions tab &ndash; Revoke API Key &ndash; enter the key name (every key with that name is revoked).<br>
 All keys: Actions tab &ndash; Revoke All API Keys.</p>
 
 <h2>HTTPS Configuration</h2>
@@ -209,18 +222,24 @@ sudo update-ca-certificates</pre>
 
 <h2 id="write-control">Write Control</h2>
 
-<p>Controls which devices the MCP server can send commands to. Read operations (listing devices, reading state) are always allowed regardless of this setting.</p>
+<p>Controls which devices the MCP server can send commands to. It is there to protect doors, locks, alarms and the like. It applies to devices only: media control (<code>control_media</code>) is never restricted by it in any mode. To stop a client controlling media, give it a Read key (see <a href="#key-scopes">Key scopes</a>). Read operations (listing devices, reading state) are always allowed regardless of this setting.</p>
 
 <dl>
-  <dt>Allow All <em>(default)</em></dt>
+  <dt>Allow All</dt>
   <dd>All devices can be controlled.</dd>
   <dt>Allowlist</dt>
   <dd>Only devices selected in Write Control Devices can be controlled.</dd>
-  <dt>Blocklist</dt>
+  <dt>Blocklist <em>(default)</em></dt>
   <dd>All devices <em>except</em> those selected in Write Control Devices can be controlled.</dd>
 </dl>
 
-<p>Use Allowlist mode to restrict the AI to specific devices (e.g. only lights). Use Blocklist to exclude sensitive devices (e.g. locks, security system).</p>
+<p><strong>Default blocklist.</strong> On a new install the driver fills Write Control Devices with every device that is not a light, thermostat or blind: locks, security panels, relays (garage doors, gates), custom devices (buttons, timers, scenes), door stations, sensors and cameras. Only lights, thermostats and blinds can be controlled until you remove devices from the list.</p>
+
+<p><strong>New devices.</strong> In Blocklist mode, each device added to the project later is put on the blocklist the first time the driver sees it (at driver start, or on Refresh Device Cache), unless it is a light, thermostat or blind. Devices you remove from the list stay removed.</p>
+
+<p><strong>Upgrades.</strong> Updating from an earlier version keeps your existing Write Control settings. If you were already using Blocklist with your own list, that list is kept and only devices added afterwards are blocked automatically. Use <strong>Reset Write Control to Default</strong> to switch to the default blocklist.</p>
+
+<p>Use Allowlist mode to restrict the AI to specific devices (e.g. only lights). Media control is not affected.</p>
 
 <h2>MCP Tools</h2>
 
@@ -357,6 +376,15 @@ sudo update-ca-certificates</pre>
 
 <p><strong>Important: @parent</strong> &ndash; Custom devices are experience button proxies. Their commands (EX_CMDs) typically live on the parent driver, not the proxy. If a command goes to the wrong target, it is silently ignored. Use <code>@parent</code> for any command handled by the parent driver.</p>
 
+<h3>Safety rules</h3>
+<ul>
+  <li><strong>Who can edit.</strong> Only keys with the Full scope can change Device Profiles through MCP.</li>
+  <li><strong>@parent and Write Control.</strong> A command sent with <code>@parent</code> goes to the driver behind the device, which may also control other devices. It is sent only if every device that driver controls is allowed by <a href="#write-control">Write Control</a>. Sensors are ignored, since there is nothing to command on them. If the driver also controls devices this driver does not expose (which cannot be put on the list), <code>@parent</code> is refused unless Write Control Mode is Allow All. Example: two thermostats from one heating driver, both allowed, can use <code>@parent</code>; a door station whose camera is blocked cannot. Only the parameters an action declares are sent.</li>
+  <li><strong>Commands never allowed.</strong> Profiles cannot send driver plumbing or this driver's own commands: <code>SET_PROPERTY</code>, <code>GET_PROPERTIES</code>, <code>LUA_ACTION</code>, <code>FIRE_EVENT</code>, <code>RESTORE_STATE</code>, <code>GET_STATE_SNAPSHOT</code>, and the c4mcp actions (Generate API Key and so on). This applies to profiles typed into the property in Composer too.</li>
+  <li><strong>Limits.</strong> Profiles are for devices that exist in the project, at most 100 devices; 20 actions per device; action strings up to 200 characters with up to 8 parameters; names, labels and variable names up to 64 characters; 32 states and 10 extra variables per device.</li>
+  <li><strong>Bad entries.</strong> An entry that breaks these rules is rejected by <code>set_device_profiles</code>. Profiles already in the property only need to pass the safety checks (field types, command names, the commands above); one that fails is skipped and logged, and the other profiles still load.</li>
+</ul>
+
 <h3>Thermostat Profiles</h3>
 
 <p>Thermostat profiles configure the setpoint type and can add custom actions beyond the standard set_mode/set_setpoint/set_fan/set_hold:</p>
@@ -462,10 +490,11 @@ sudo update-ca-certificates</pre>
   <li>Verify the command name and parameters match what the device actually supports.</li>
 </ul>
 
-<h3>Connection drops / "Too many connections"</h3>
+<h3>Connection drops</h3>
 <ul>
-  <li>Default max is 5 simultaneous connections &ndash; increase via Max Connections if needed.</li>
-  <li>Idle connections are closed after 300 seconds &ndash; increase Idle Timeout if the client reconnects frequently.</li>
+  <li>A connection must send its request within 5 seconds and is closed once answered; MCP clients open a new connection per request, so this is normal.</li>
+  <li>If more clients connect at once than Max Connections (default 5), the connection that has waited longest is closed. Increase Max Connections if several clients send many requests in parallel.</li>
+  <li>After a change to Transport, MCP Port or the connection settings, the server restarts and can take a few seconds to listen again.</li>
 </ul>
 
 <h3>Rate limiting (429 errors)</h3>
