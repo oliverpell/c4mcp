@@ -27,6 +27,8 @@ local PROXY_TYPE_MAP = {
     ["light.c4i"]          = "light",
     ["thermostatV2.c4i"]   = "thermostat",
     ["lock.c4i"]           = "lock",
+    -- Generic relay-driven Door Lock (gates, door strikes): shown as a lock in Navigator
+    ["relaysingle_doorlock_c4.c4i"] = "lock",
     ["blind.c4i"]          = "blind",
     ["uibutton.c4i"]       = "custom_device",
     ["relay.c4i"]          = "relay",

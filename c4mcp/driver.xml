@@ -108,6 +108,7 @@
           <item>light.c4i</item>
           <item>thermostatV2.c4i</item>
           <item>lock.c4i</item>
+          <item>relaysingle_doorlock_c4.c4i</item>
           <item>blind.c4i</item>
           <item>uibutton.c4i</item>
           <item>relay.c4i</item>
