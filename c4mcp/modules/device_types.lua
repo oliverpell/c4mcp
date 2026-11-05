@@ -700,8 +700,8 @@ M.register("custom_device", {
 
 -- Fireplace (fireplace.c4i)
 -- Actions come from the Device Profile, like custom devices: the built-in
--- fireplace.c4i profile offers on/off/toggle (ON/OFF/TOGGLE), and a per-device
--- profile can replace them to match how the fireplace is wired.
+-- fireplace.c4i profile offers toggle (TOGGLE) and trigger (TRIGGER with a pulse
+-- length), and a per-device profile can replace them to match the fireplace.
 -- power is read from the profile's state_var if set, otherwise from the first
 -- common on/off variable found; it is nil when unknown (e.g. no feedback).
 -- variables lists the device's variables so an owner can choose state_var.

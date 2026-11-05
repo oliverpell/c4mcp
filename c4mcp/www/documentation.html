@@ -295,7 +295,7 @@ sudo update-ca-certificates</pre>
 <tr><td><strong>security</strong></td><td><code>arm_stay</code>, <code>arm_away</code>, <code>arm_night</code>, <code>disarm</code> (all accept optional <code>code</code>)</td><td><code>armed_mode</code>, <code>alarm_state</code></td></tr>
 <tr><td><strong>sensor</strong> <em>(read-only)</em></td><td>&mdash;</td><td><code>sensor_type</code>, <code>triggered</code>, <code>battery</code>, <code>last_triggered</code> (motion only)</td></tr>
 <tr><td><strong>custom_device</strong></td><td><code>select</code> plus profile-defined actions</td><td><code>value</code>, <code>label</code>, <code>category</code>, plus profile-specific extra vars</td></tr>
-<tr><td><strong>fireplace</strong></td><td>From its Device Profile: by default <code>on</code>, <code>off</code>, <code>toggle</code> (sending <code>ON</code>, <code>OFF</code>, <code>TOGGLE</code>). Give a fireplace its own profile if it is wired differently, e.g. toggle only.</td><td><code>power</code> (true/false; omitted when unknown), <code>state_var</code>, <code>value</code>, <code>category</code>, <code>variables</code> (the device&rsquo;s variables, to help choose <code>state_var</code>). <code>power</code> comes from the profile&rsquo;s <code>state_var</code> if set, otherwise from <code>POWER_STATE</code>, <code>STATE</code>, <code>POWER</code> or <code>FIREPLACE_STATE</code>. Fireplaces start on the default blocklist.</td></tr>
+<tr><td><strong>fireplace</strong></td><td>From its Device Profile: by default <code>toggle</code> (<code>TOGGLE</code>: one relay pulse of the length set in Composer) and <code>trigger</code> (<code>TRIGGER</code>, with <code>TIME</code> 100&ndash;5000 ms). Control4&rsquo;s relay-driven <code>fireplace.c4i</code> ignores <code>ON</code>/<code>OFF</code>. Give a fireplace its own profile to define on/off, e.g. <code>{"on": "TOGGLE", "off": "TRIGGER(TIME[2000])"}</code> for a fireplace that lights on a short press and turns off on a long one.</td><td><code>power</code> (true/false; omitted when unknown), <code>state_var</code>, <code>value</code>, <code>category</code>, <code>variables</code> (the device&rsquo;s variables, to help choose <code>state_var</code>). <code>power</code> comes from the profile&rsquo;s <code>state_var</code> if set, otherwise from <code>POWER_STATE</code>, <code>STATE</code>, <code>POWER</code> or <code>FIREPLACE_STATE</code>. Fireplaces start on the default blocklist.</td></tr>
 <tr><td><strong>camera</strong> / <strong>door_station</strong></td><td><em>read-only, minimal state</em></td><td>&mdash;</td></tr>
 </table>
 
@@ -328,7 +328,7 @@ sudo update-ca-certificates</pre>
 <tr><td><code>timer_*.c4z</code></td><td>timer</td><td>on, off, set_countdown_mins</td></tr>
 <tr><td><code>experience-button-scenario.c4z</code></td><td>scenario</td><td>select, set_state</td></tr>
 <tr><td><code>uibutton_*.c4z</code></td><td>av_source</td><td>select</td></tr>
-<tr><td><code>fireplace.c4i</code></td><td>fireplace</td><td>on, off, toggle</td></tr>
+<tr><td><code>fireplace.c4i</code></td><td>fireplace</td><td>toggle, trigger</td></tr>
 </table>
 
 <p>User-configured profiles (by device ID) take priority over built-in profiles and fully replace them (no merging).</p>
