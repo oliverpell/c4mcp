@@ -608,6 +608,16 @@ M.register("thermostat", {
 })
 
 -- Sensor (read-only)
+-- contactsingle.c4i and motionsensor.c4i report CONTACT_STATE / MOTION_SENSOR_STATE. Other sensors
+-- (e.g. Control4's generic contactsingle_*_c4.c4i drivers) use other variables, so for them, or
+-- whenever a Device Profile names one, the state comes from the profile's state_var, with states
+-- mapping its values to "triggered" or "clear". Without one, triggered is omitted and the
+-- device's variables are listed so an owner can choose state_var.
+local KNOWN_SENSORS = {
+    ["contactsingle.c4i"] = { sensor_type = "contact", var = "CONTACT_STATE", triggered = "Open" },
+    ["motionsensor.c4i"] = { sensor_type = "motion", var = "MOTION_SENSOR_STATE", triggered = "Active" },
+}
+
 M.register("sensor", {
     actions = {},
     get_state = function(device_id, dev, vars)
@@ -616,17 +626,47 @@ M.register("sensor", {
             battery = tonumber(try_var(vars, "BATTERY_LEVEL")),
             controls = { actions = {} },
         }
-        if dev.c4i == "contactsingle.c4i" then
-            state.sensor_type = "contact"
-            local contact = M.get_var_by_name(vars, "CONTACT_STATE", device_id)
-            state.triggered = (contact == "Open")
-        elseif dev.c4i == "motionsensor.c4i" then
+        local config = device_config.get_config(device_id, dev.driver_name)
+        local known = KNOWN_SENSORS[dev.c4i]
+        if known and not (config and config.state_var) then
+            state.sensor_type = known.sensor_type
+            local value = M.get_var_by_name(vars, known.var, device_id)
+            state.triggered = (value == known.triggered)
+            if known.sensor_type == "motion" then
+                state.last_triggered = try_var(vars, "LAST_TRIGGERED")
+            end
+            return state
+        end
+
+        local c4i = tostring(dev.c4i or "")
+        if known then
+            state.sensor_type = known.sensor_type
+        elseif c4i:find("motion", 1, true) then
             state.sensor_type = "motion"
-            local motion_state = M.get_var_by_name(vars, "MOTION_SENSOR_STATE", device_id)
-            state.triggered = (motion_state == "Active")
-            state.last_triggered = try_var(vars, "LAST_TRIGGERED")
+        elseif c4i:find("contact", 1, true) then
+            state.sensor_type = "contact"
         else
             state.sensor_type = "unknown"
+        end
+        if state.sensor_type == "motion" then
+            state.last_triggered = try_var(vars, "LAST_TRIGGERED")
+        end
+
+        local value = config and config.state_var and try_var(vars, config.state_var)
+        if value ~= nil and value ~= false then
+            state.state_var = config.state_var
+            state.value = value
+            if config.states then
+                local label = tostring(device_config.get_state_label(config, value)):lower()
+                if label == "triggered" then
+                    state.triggered = true
+                elseif label == "clear" then
+                    state.triggered = false
+                end
+            end
+        else
+            local variables = M.list_variables(vars)
+            if next(variables) then state.variables = variables end
         end
         return state
     end,

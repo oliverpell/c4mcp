@@ -114,6 +114,9 @@
           <item>relay.c4i</item>
           <item>contactsingle.c4i</item>
           <item>motionsensor.c4i</item>
+          <item>relaysingle_relay_c4.c4i</item>
+          <item>contactsingle_doorcontactsensor_c4.c4i</item>
+          <item>contactsingle_motionsensor_c4.c4i</item>
           <item>securitysystem.c4i</item>
           <item>camera.c4i</item>
           <item>doorstation.c4i</item>

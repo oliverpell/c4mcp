@@ -34,6 +34,11 @@ local PROXY_TYPE_MAP = {
     ["relay.c4i"]          = "relay",
     ["contactsingle.c4i"]  = "sensor",
     ["motionsensor.c4i"]   = "sensor",
+    -- Control4's generic relay and contact drivers (e.g. PoE port relays, wired
+    -- door contacts and motion sensors): RelayState, and sensor variables named by a Device Profile
+    ["relaysingle_relay_c4.c4i"]              = "relay",
+    ["contactsingle_doorcontactsensor_c4.c4i"] = "sensor",
+    ["contactsingle_motionsensor_c4.c4i"]      = "sensor",
     ["securitysystem.c4i"] = "security",
     ["camera.c4i"]         = "camera",
     ["doorstation.c4i"]    = "door_station",
