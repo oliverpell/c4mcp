@@ -37,6 +37,8 @@ local PROXY_TYPE_MAP = {
     ["securitysystem.c4i"] = "security",
     ["camera.c4i"]         = "camera",
     ["doorstation.c4i"]    = "door_station",
+    -- Fireplace proxy (often relay-driven): actions come from its Device Profile
+    ["fireplace.c4i"]      = "fireplace",
     -- Media devices (excluded from get_devices, used for name resolution in get_media)
     ["receiver.c4i"]       = "media",
     ["amplifier.c4i"]      = "media",

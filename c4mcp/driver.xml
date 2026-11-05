@@ -117,6 +117,7 @@
           <item>securitysystem.c4i</item>
           <item>camera.c4i</item>
           <item>doorstation.c4i</item>
+          <item>fireplace.c4i</item>
           <item>pool.c4i</item>
         </items>
         <multiselect>true</multiselect>

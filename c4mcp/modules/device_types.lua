@@ -698,6 +698,79 @@ M.register("custom_device", {
     end,
 })
 
+-- Fireplace (fireplace.c4i)
+-- Actions come from the Device Profile, like custom devices: the built-in
+-- fireplace.c4i profile offers on/off/toggle (ON/OFF/TOGGLE), and a per-device
+-- profile can replace them to match how the fireplace is wired.
+-- power is read from the profile's state_var if set, otherwise from the first
+-- common on/off variable found; it is nil when unknown (e.g. no feedback).
+-- variables lists the device's variables so an owner can choose state_var.
+local FIREPLACE_STATE_VARS = { "POWER_STATE", "STATE", "POWER", "FIREPLACE_STATE" }
+local FIREPLACE_MAX_VARS = 20
+local POWER_VALUES = {
+    ["1"] = true, ["on"] = true, ["true"] = true,
+    ["0"] = false, ["off"] = false, ["false"] = false,
+}
+
+--- Interpret an on/off value ("1", "On", "true", ...); nil if it isn't one
+local function to_power(value)
+    if value == nil then return nil end
+    return POWER_VALUES[tostring(value):lower()]
+end
+
+M.register("fireplace", {
+    actions = {},
+    get_state = function(device_id, dev, vars)
+        local config = device_config.get_config(device_id, dev.driver_name)
+        local var_name, raw
+        if config and config.state_var then
+            var_name = config.state_var
+            raw = M.try_get_var(vars, var_name)
+        else
+            for _, name in ipairs(FIREPLACE_STATE_VARS) do
+                raw = M.try_get_var(vars, name)
+                if raw ~= nil then
+                    var_name = name
+                    break
+                end
+            end
+        end
+
+        local power
+        if config and config.states and raw ~= nil then
+            power = to_power(device_config.get_state_label(config, raw))
+        else
+            power = to_power(raw)
+        end
+
+        local actions_schema = {}
+        if config and config.actions then
+            for name, action_def in pairs(config.actions) do
+                actions_schema[name] = build_action_schema(action_def)
+            end
+        end
+
+        local variables, count = {}, 0
+        for _, v in pairs(vars or {}) do
+            if count >= FIREPLACE_MAX_VARS then break end
+            if v.name ~= nil then
+                variables[tostring(v.name)] = v.value
+                count = count + 1
+            end
+        end
+
+        local result = {
+            power = power,
+            state_var = var_name,
+            value = raw,
+            controls = { actions = actions_schema },
+        }
+        if config then result.category = config.category end
+        if next(variables) then result.variables = variables end
+        return result
+    end,
+})
+
 -- Camera (minimal)
 M.register("camera", {
     actions = {},

@@ -182,7 +182,7 @@ function M.register_control_tools(mcp_server)
 
     -- Unified control_device tool
     mcp_server:register_tool("control_device", {
-        description = "Control any device: light, blind, thermostat, lock, relay, security, or custom device. Call get_devices first to discover available actions and their parameter schemas in controls.actions.",
+        description = "Control any device: light, blind, thermostat, lock, relay, security, fireplace, or custom device. Call get_devices first to discover available actions and their parameter schemas in controls.actions.",
         inputSchema = {
             type = "object",
             properties = {

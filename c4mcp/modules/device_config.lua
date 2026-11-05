@@ -36,6 +36,12 @@ M.BUILTIN_PROFILES = {
     -- Scenario / AV Source Buttons (SELECT is a proxy command, no @parent)
     ["experience-button-scenario.c4z"] = { category = "scenario",  states = { [0] = "idle", [1] = "selected" }, actions = { select = "SELECT", set_state = "SetState(State[Off,On]) @parent" }, extra_vars = {} },
     ["uibutton_*.c4z"]                = { category = "av_source", states = { [0] = "idle", [1] = "selected" }, actions = { select = "SELECT" }, extra_vars = {} },
+
+    -- Fireplace proxy (device type "fireplace"). Fireplaces are wired differently from
+    -- one installation to the next (separate on/off relays, a single toggle input, with
+    -- or without feedback), so a device's own profile can replace these actions and
+    -- name its on/off variable with state_var.
+    ["fireplace.c4i"] = { category = "fireplace", actions = { on = "ON", off = "OFF", toggle = "TOGGLE" }, extra_vars = {} },
 }
 
 -- Wildcard pattern keys cached as Lua patterns for matching
