@@ -36,6 +36,21 @@ function M.get_var_by_name(vars, name, deviceId)
     return nil
 end
 
+--- A device's variables as {name = value}, at most `limit` (default 20) of them,
+--- for devices whose state variable is unknown
+function M.list_variables(vars, limit)
+    limit = limit or 20
+    local out, count = {}, 0
+    for _, v in pairs(vars or {}) do
+        if count >= limit then break end
+        if v.name ~= nil then
+            out[tostring(v.name)] = v.value
+            count = count + 1
+        end
+    end
+    return out
+end
+
 --- Silent variable lookup for optional/capability-gated variables
 function M.try_get_var(vars, name)
     if not vars then return nil end
@@ -287,18 +302,52 @@ M.register("lock", {
             schema = {},
         },
     },
+    -- Status comes from LOCK_STATUS ("Locked"/"Unlocked") on lock proxies. Relay-driven
+    -- Door Locks (relaysingle_doorlock_c4.c4i) report it in other variables, so a Device
+    -- Profile can name the variable (state_var) and map its values to "locked"/"unlocked"
+    -- (states). If the variable is missing, locked is omitted rather than reported as
+    -- false, and the device's variables are listed so an owner can choose state_var.
+    -- Profile actions (e.g. a relay lock's TOGGLE) are listed alongside lock/unlock.
     get_state = function(device_id, dev, vars)
-        local status = M.get_var_by_name(vars, "LOCK_STATUS", device_id)
-        return {
-            locked = (status == "Locked"),
+        local config = device_config.get_config(device_id, dev.driver_name)
+        local var_name = (config and config.state_var) or "LOCK_STATUS"
+        local status = M.try_get_var(vars, var_name)
+
+        local locked
+        if status ~= nil then
+            if config and config.states then
+                local label = tostring(device_config.get_state_label(config, status)):lower()
+                if label == "locked" then
+                    locked = true
+                elseif label == "unlocked" then
+                    locked = false
+                end
+            else
+                locked = (status == "Locked")
+            end
+        end
+
+        local actions = { lock = NO_PARAMS, unlock = NO_PARAMS }
+        if config and config.actions then
+            for name, action_def in pairs(config.actions) do
+                actions[name] = build_action_schema(action_def)
+            end
+        end
+
+        local result = {
+            locked = locked,
             battery = tonumber(M.try_get_var(vars, "BATTERY_LEVEL")),
-            controls = {
-                actions = {
-                    lock = NO_PARAMS,
-                    unlock = NO_PARAMS,
-                },
-            },
+            controls = { actions = actions },
         }
+        if config and config.state_var then
+            result.state_var = var_name
+            result.value = status
+        end
+        if status == nil then
+            local variables = M.list_variables(vars)
+            if next(variables) then result.variables = variables end
+        end
+        return result
     end,
 })
 
