@@ -27,14 +27,23 @@ local PROXY_TYPE_MAP = {
     ["light.c4i"]          = "light",
     ["thermostatV2.c4i"]   = "thermostat",
     ["lock.c4i"]           = "lock",
+    -- Generic relay-driven Door Lock (gates, door strikes): shown as a lock in Navigator
+    ["relaysingle_doorlock_c4.c4i"] = "lock",
     ["blind.c4i"]          = "blind",
     ["uibutton.c4i"]       = "custom_device",
     ["relay.c4i"]          = "relay",
     ["contactsingle.c4i"]  = "sensor",
     ["motionsensor.c4i"]   = "sensor",
+    -- Control4's generic relay and contact drivers (e.g. PoE port relays, wired
+    -- door contacts and motion sensors): RelayState, and sensor variables named by a Device Profile
+    ["relaysingle_relay_c4.c4i"]              = "relay",
+    ["contactsingle_doorcontactsensor_c4.c4i"] = "sensor",
+    ["contactsingle_motionsensor_c4.c4i"]      = "sensor",
     ["securitysystem.c4i"] = "security",
     ["camera.c4i"]         = "camera",
     ["doorstation.c4i"]    = "door_station",
+    -- Fireplace proxy (often relay-driven): actions come from its Device Profile
+    ["fireplace.c4i"]      = "fireplace",
     -- Media devices (excluded from get_devices, used for name resolution in get_media)
     ["receiver.c4i"]       = "media",
     ["amplifier.c4i"]      = "media",

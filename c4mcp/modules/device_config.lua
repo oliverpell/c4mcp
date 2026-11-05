@@ -36,6 +36,20 @@ M.BUILTIN_PROFILES = {
     -- Scenario / AV Source Buttons (SELECT is a proxy command, no @parent)
     ["experience-button-scenario.c4z"] = { category = "scenario",  states = { [0] = "idle", [1] = "selected" }, actions = { select = "SELECT", set_state = "SetState(State[Off,On]) @parent" }, extra_vars = {} },
     ["uibutton_*.c4z"]                = { category = "av_source", states = { [0] = "idle", [1] = "selected" }, actions = { select = "SELECT" }, extra_vars = {} },
+
+    -- Control4's generic relay Door Lock (gates, door strikes; device type "lock"): it takes
+    -- TOGGLE and TRIGGER (a pulse, TIME in ms), not LOCK/UNLOCK, and reports RelayState, not
+    -- LOCK_STATUS. What the relay state means depends on the wiring (held or pulsed), so a
+    -- device's own profile adds state_var/states, e.g. states = { ["0"] = "locked", ["1"] = "unlocked" }.
+    ["relaysingle_doorlock_c4.c4i"] = { category = "lock", actions = { toggle = "TOGGLE", trigger = "TRIGGER(TIME[100-5000])" }, extra_vars = {} },
+
+    -- Fireplace proxy (device type "fireplace"). Control4's fireplace.c4i is relay-driven:
+    -- it takes TOGGLE (one pulse of the length set in Composer) and TRIGGER with a pulse
+    -- length in ms, and ignores ON/OFF. What a pulse does depends on the fireplace (e.g. a
+    -- short press lights it and a long press turns it off), so a device's own profile can
+    -- define on/off, e.g. { on = "TOGGLE", off = "TRIGGER(TIME[2000])" }, and name an
+    -- on/off variable with state_var if the fireplace reports one.
+    ["fireplace.c4i"] = { category = "fireplace", actions = { toggle = "TOGGLE", trigger = "TRIGGER(TIME[100-5000])" }, extra_vars = {} },
 }
 
 -- Wildcard pattern keys cached as Lua patterns for matching

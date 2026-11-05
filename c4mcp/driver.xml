@@ -108,14 +108,19 @@
           <item>light.c4i</item>
           <item>thermostatV2.c4i</item>
           <item>lock.c4i</item>
+          <item>relaysingle_doorlock_c4.c4i</item>
           <item>blind.c4i</item>
           <item>uibutton.c4i</item>
           <item>relay.c4i</item>
           <item>contactsingle.c4i</item>
           <item>motionsensor.c4i</item>
+          <item>relaysingle_relay_c4.c4i</item>
+          <item>contactsingle_doorcontactsensor_c4.c4i</item>
+          <item>contactsingle_motionsensor_c4.c4i</item>
           <item>securitysystem.c4i</item>
           <item>camera.c4i</item>
           <item>doorstation.c4i</item>
+          <item>fireplace.c4i</item>
           <item>pool.c4i</item>
         </items>
         <multiselect>true</multiselect>

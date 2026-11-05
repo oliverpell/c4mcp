@@ -36,6 +36,21 @@ function M.get_var_by_name(vars, name, deviceId)
     return nil
 end
 
+--- A device's variables as {name = value}, at most `limit` (default 20) of them,
+--- for devices whose state variable is unknown
+function M.list_variables(vars, limit)
+    limit = limit or 20
+    local out, count = {}, 0
+    for _, v in pairs(vars or {}) do
+        if count >= limit then break end
+        if v.name ~= nil then
+            out[tostring(v.name)] = v.value
+            count = count + 1
+        end
+    end
+    return out
+end
+
 --- Silent variable lookup for optional/capability-gated variables
 function M.try_get_var(vars, name)
     if not vars then return nil end
@@ -287,18 +302,52 @@ M.register("lock", {
             schema = {},
         },
     },
+    -- Status comes from LOCK_STATUS ("Locked"/"Unlocked") on lock proxies. Relay-driven
+    -- Door Locks (relaysingle_doorlock_c4.c4i) report it in other variables, so a Device
+    -- Profile can name the variable (state_var) and map its values to "locked"/"unlocked"
+    -- (states). If the variable is missing, locked is omitted rather than reported as
+    -- false, and the device's variables are listed so an owner can choose state_var.
+    -- Profile actions (e.g. a relay lock's TOGGLE) are listed alongside lock/unlock.
     get_state = function(device_id, dev, vars)
-        local status = M.get_var_by_name(vars, "LOCK_STATUS", device_id)
-        return {
-            locked = (status == "Locked"),
+        local config = device_config.get_config(device_id, dev.driver_name)
+        local var_name = (config and config.state_var) or "LOCK_STATUS"
+        local status = M.try_get_var(vars, var_name)
+
+        local locked
+        if status ~= nil then
+            if config and config.states then
+                local label = tostring(device_config.get_state_label(config, status)):lower()
+                if label == "locked" then
+                    locked = true
+                elseif label == "unlocked" then
+                    locked = false
+                end
+            else
+                locked = (status == "Locked")
+            end
+        end
+
+        local actions = { lock = NO_PARAMS, unlock = NO_PARAMS }
+        if config and config.actions then
+            for name, action_def in pairs(config.actions) do
+                actions[name] = build_action_schema(action_def)
+            end
+        end
+
+        local result = {
+            locked = locked,
             battery = tonumber(M.try_get_var(vars, "BATTERY_LEVEL")),
-            controls = {
-                actions = {
-                    lock = NO_PARAMS,
-                    unlock = NO_PARAMS,
-                },
-            },
+            controls = { actions = actions },
         }
+        if config and config.state_var then
+            result.state_var = var_name
+            result.value = status
+        end
+        if status == nil then
+            local variables = M.list_variables(vars)
+            if next(variables) then result.variables = variables end
+        end
+        return result
     end,
 })
 
@@ -559,6 +608,16 @@ M.register("thermostat", {
 })
 
 -- Sensor (read-only)
+-- contactsingle.c4i and motionsensor.c4i report CONTACT_STATE / MOTION_SENSOR_STATE. Other sensors
+-- (e.g. Control4's generic contactsingle_*_c4.c4i drivers) use other variables, so for them, or
+-- whenever a Device Profile names one, the state comes from the profile's state_var, with states
+-- mapping its values to "triggered" or "clear". Without one, triggered is omitted and the
+-- device's variables are listed so an owner can choose state_var.
+local KNOWN_SENSORS = {
+    ["contactsingle.c4i"] = { sensor_type = "contact", var = "CONTACT_STATE", triggered = "Open" },
+    ["motionsensor.c4i"] = { sensor_type = "motion", var = "MOTION_SENSOR_STATE", triggered = "Active" },
+}
+
 M.register("sensor", {
     actions = {},
     get_state = function(device_id, dev, vars)
@@ -567,17 +626,47 @@ M.register("sensor", {
             battery = tonumber(try_var(vars, "BATTERY_LEVEL")),
             controls = { actions = {} },
         }
-        if dev.c4i == "contactsingle.c4i" then
-            state.sensor_type = "contact"
-            local contact = M.get_var_by_name(vars, "CONTACT_STATE", device_id)
-            state.triggered = (contact == "Open")
-        elseif dev.c4i == "motionsensor.c4i" then
+        local config = device_config.get_config(device_id, dev.driver_name)
+        local known = KNOWN_SENSORS[dev.c4i]
+        if known and not (config and config.state_var) then
+            state.sensor_type = known.sensor_type
+            local value = M.get_var_by_name(vars, known.var, device_id)
+            state.triggered = (value == known.triggered)
+            if known.sensor_type == "motion" then
+                state.last_triggered = try_var(vars, "LAST_TRIGGERED")
+            end
+            return state
+        end
+
+        local c4i = tostring(dev.c4i or "")
+        if known then
+            state.sensor_type = known.sensor_type
+        elseif c4i:find("motion", 1, true) then
             state.sensor_type = "motion"
-            local motion_state = M.get_var_by_name(vars, "MOTION_SENSOR_STATE", device_id)
-            state.triggered = (motion_state == "Active")
-            state.last_triggered = try_var(vars, "LAST_TRIGGERED")
+        elseif c4i:find("contact", 1, true) then
+            state.sensor_type = "contact"
         else
             state.sensor_type = "unknown"
+        end
+        if state.sensor_type == "motion" then
+            state.last_triggered = try_var(vars, "LAST_TRIGGERED")
+        end
+
+        local value = config and config.state_var and try_var(vars, config.state_var)
+        if value ~= nil and value ~= false then
+            state.state_var = config.state_var
+            state.value = value
+            if config.states then
+                local label = tostring(device_config.get_state_label(config, value)):lower()
+                if label == "triggered" then
+                    state.triggered = true
+                elseif label == "clear" then
+                    state.triggered = false
+                end
+            end
+        else
+            local variables = M.list_variables(vars)
+            if next(variables) then state.variables = variables end
         end
         return state
     end,
@@ -645,6 +734,79 @@ M.register("custom_device", {
             end
         end
 
+        return result
+    end,
+})
+
+-- Fireplace (fireplace.c4i)
+-- Actions come from the Device Profile, like custom devices: the built-in
+-- fireplace.c4i profile offers toggle (TOGGLE) and trigger (TRIGGER with a pulse
+-- length), and a per-device profile can replace them to match the fireplace.
+-- power is read from the profile's state_var if set, otherwise from the first
+-- common on/off variable found; it is nil when unknown (e.g. no feedback).
+-- variables lists the device's variables so an owner can choose state_var.
+local FIREPLACE_STATE_VARS = { "POWER_STATE", "STATE", "POWER", "FIREPLACE_STATE" }
+local FIREPLACE_MAX_VARS = 20
+local POWER_VALUES = {
+    ["1"] = true, ["on"] = true, ["true"] = true,
+    ["0"] = false, ["off"] = false, ["false"] = false,
+}
+
+--- Interpret an on/off value ("1", "On", "true", ...); nil if it isn't one
+local function to_power(value)
+    if value == nil then return nil end
+    return POWER_VALUES[tostring(value):lower()]
+end
+
+M.register("fireplace", {
+    actions = {},
+    get_state = function(device_id, dev, vars)
+        local config = device_config.get_config(device_id, dev.driver_name)
+        local var_name, raw
+        if config and config.state_var then
+            var_name = config.state_var
+            raw = M.try_get_var(vars, var_name)
+        else
+            for _, name in ipairs(FIREPLACE_STATE_VARS) do
+                raw = M.try_get_var(vars, name)
+                if raw ~= nil then
+                    var_name = name
+                    break
+                end
+            end
+        end
+
+        local power
+        if config and config.states and raw ~= nil then
+            power = to_power(device_config.get_state_label(config, raw))
+        else
+            power = to_power(raw)
+        end
+
+        local actions_schema = {}
+        if config and config.actions then
+            for name, action_def in pairs(config.actions) do
+                actions_schema[name] = build_action_schema(action_def)
+            end
+        end
+
+        local variables, count = {}, 0
+        for _, v in pairs(vars or {}) do
+            if count >= FIREPLACE_MAX_VARS then break end
+            if v.name ~= nil then
+                variables[tostring(v.name)] = v.value
+                count = count + 1
+            end
+        end
+
+        local result = {
+            power = power,
+            state_var = var_name,
+            value = raw,
+            controls = { actions = actions_schema },
+        }
+        if config then result.category = config.category end
+        if next(variables) then result.variables = variables end
         return result
     end,
 })
