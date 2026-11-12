@@ -141,7 +141,7 @@
 <p>Each key has a scope that decides which tools it can see and call. A key never sees tools above its scope, and calling one returns an error.</p>
 <table>
 <tr><th>Scope</th><th>Tools</th></tr>
-<tr><td><strong>Read</strong></td><td><code>get_home</code>, <code>get_devices</code>, <code>get_media</code>, <code>get_device_profiles</code>, and MCP resources</td></tr>
+<tr><td><strong>Read</strong></td><td><code>get_home</code>, <code>get_devices</code>, <code>discover_devices</code>, <code>get_media</code>, <code>get_device_profiles</code>, and MCP resources</td></tr>
 <tr><td><strong>Write</strong></td><td>Read, plus <code>control_device</code>, <code>control_devices</code> and <code>control_media</code></td></tr>
 <tr><td><strong>Full</strong></td><td>Write, plus editing Device Profiles (<code>set_device_profiles</code>, <code>configure_device_profiles</code>)</td></tr>
 </table>
@@ -253,6 +253,9 @@ sudo update-ca-certificates</pre>
 
   <dt><code>get_devices</code></dt>
   <dd>List devices with live state. Supports filtering by <code>device_id</code> (single device), <code>room_id</code>, or <code>device_type</code>. Use <code>state_fields</code> to limit which state fields are returned. Always includes <code>controls.actions</code> showing available commands for each device.</dd>
+
+  <dt><code>discover_devices</code></dt>
+  <dd>List all project drivers and proxies, including unsupported device types. Use <code>room_id</code> to filter the inventory. Pass <code>device_id</code> to read raw variables for one device. Use <code>variable_names</code> to return only variables with those exact names. Raw values can contain private data. Inventory calls do not read variable values. Discovery does not add control actions. A failed variable read returns <code>variables_available: false</code>.</dd>
 
   <dt><code>get_device_profiles</code></dt>
   <dd>Show current Device Profiles configuration and count of built-in profiles.</dd>
