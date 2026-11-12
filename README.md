@@ -24,6 +24,10 @@ A Control4 DriverWorks driver that exposes your smart home via the [Model Contex
 
 See the full [documentation](c4mcp/www/documentation.html) for client configuration examples, HTTPS setup, device profiles, troubleshooting, and more.
 
+## Device discovery
+
+Use the read-only `discover_devices` tool to inspect unsupported devices. List all drivers and proxies, filter by room, or read raw variables for one device. See [device discovery](DISCOVERY.md) for arguments and local checks.
+
 ## Building
 
 Requires [DriverPackager and DriverValidator](https://snap-one.github.io/docs-driverworks/) (Windows/WSL) in PATH.

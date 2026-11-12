@@ -9,6 +9,7 @@ local M = {}
 -- Internal caches
 local _rooms = {}     -- {[roomId] = {id, name, floor}}
 local _devices = {}   -- {[deviceId] = {id, name, type, room_id, room_name, driver_name}}
+local _inventory = {} -- All protocol devices and proxies, including unknown types
 local _children = {}  -- {[parentId] = {proxyId, ...}} every proxy under each parent device
 local _scale = "C"    -- Temperature scale from project
 -- Media source caches (built in refresh_cache)
@@ -119,6 +120,7 @@ function M.refresh_cache()
     _rooms = {}
     _devices = {}
     _children = {}
+    _inventory = {}
 
     local xml = C4:GetProjectItems()
     if not xml or xml == "" then return end
@@ -272,6 +274,48 @@ function M.refresh_cache()
             if rid then
                 dev.room_id = rid
                 dev.room_name = _rooms[rid] and _rooms[rid].name or ""
+            end
+        end
+    end
+
+    -- Keep a separate read-only inventory. Unknown devices must not gain actions.
+    for _, kind in ipairs({6, 7}) do
+        for _, item in ipairs(find_items_by_type(tree, kind)) do
+            local id = tonumber(get_text(find_child(item, "id")))
+            if id then
+                local data = find_child(item, "itemdata")
+                local room_id = data and tonumber(get_text(find_child(data, "room_id")))
+                local dev = _devices[id]
+                if dev then room_id = dev.room_id end
+                _inventory[id] = {
+                    id = id,
+                    name = get_text(find_child(item, "name")) or "Unknown",
+                    item_type = kind == 6 and "driver" or "proxy",
+                    proxy_type = get_text(find_child(item, "c4i")),
+                    driver_name = dev and dev.driver_name or
+                        (data and get_text(find_child(data, "config_data_file"))),
+                    parent_id = dev and dev.parent_id,
+                    recognized_type = dev and dev.type,
+                    room_id = room_id,
+                    room_name = room_id and _rooms[room_id] and _rooms[room_id].name,
+                }
+            end
+        end
+    end
+    -- Some protocol drivers inherit their room from the project tree.
+    for _, room_item in ipairs(room_items) do
+        local rid = tonumber(get_text(find_child(room_item, "id")))
+        local subitems = find_child(room_item, "subitems")
+        if rid and subitems then
+            for _, kind in ipairs({6, 7}) do
+                for _, item in ipairs(find_items_by_type(subitems, kind)) do
+                    local id = tonumber(get_text(find_child(item, "id")))
+                    local dev = id and _inventory[id]
+                    if dev and not dev.room_id then
+                        dev.room_id = rid
+                        dev.room_name = _rooms[rid] and _rooms[rid].name
+                    end
+                end
             end
         end
     end
@@ -790,6 +834,53 @@ function M.register_read_tools(mcp_server)
             dev.state = filter_state(M.get_device_state(dev.id, vars_cache))
         end
         return devices
+    end, "read")
+
+    -- Raw discovery is read-only and independent of control-device dispatch.
+    mcp_server:register_tool("discover_devices", {
+        description = "List all project drivers and proxies, including unsupported devices. Specify device_id to read raw variables for one device. Raw values may contain private data; request variable_names to limit fields. No device actions are exposed.",
+        inputSchema = {
+            type = "object",
+            properties = {
+                device_id = { type = "integer", description = "Inspect one driver or proxy ID" },
+                room_id = { type = "integer", description = "Filter inventory by room ID" },
+                variable_names = { type = "array", items = { type = "string" }, description = "Only return raw variables with these exact names" },
+            },
+        },
+    }, function(args)
+        if args.device_id ~= nil then
+            local id = tonumber(args.device_id)
+            local dev = _inventory[id]
+            if not dev then
+                return { content = {{ type = "text", text = "Device not found" }}, isError = true }
+            end
+            local allowed = nil
+            if args.variable_names then
+                allowed = {}
+                for _, name in ipairs(args.variable_names) do allowed[name] = true end
+            end
+            local ok, vars = pcall(function() return C4:GetDeviceVariables(id) end)
+            local result = { device = dev, variables = {}, variables_available = ok and type(vars) == "table" }
+            if result.variables_available then
+                for key, var in pairs(vars) do
+                    if type(var) == "table" and (not allowed or allowed[var.name]) then
+                        result.variables[#result.variables + 1] = {
+                            id = var.id or key, name = var.name, value = var.value,
+                        }
+                    end
+                end
+                table.sort(result.variables, function(a, b) return tostring(a.id) < tostring(b.id) end)
+            end
+            return result
+        end
+        local result = {}
+        for _, dev in pairs(_inventory) do
+            if not args.room_id or dev.room_id == tonumber(args.room_id) then
+                result[#result + 1] = dev
+            end
+        end
+        table.sort(result, function(a, b) return a.id < b.id end)
+        return { devices = result, count = #result }
     end, "read")
 
     -- get_device_profiles
